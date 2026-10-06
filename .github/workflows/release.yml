@@ -1,0 +1,72 @@
+name: Release
+
+# A tag v0.1.0 releases both implementations at that version: the Go module
+# is the tag itself, and the npm package is published from ts/ with the same
+# version number, which the workflow checks.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  npm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write # npm provenance
+    env:
+      NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+    defaults:
+      run:
+        working-directory: ts
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          package_json_file: ts/package.json
+          run_install: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+          cache-dependency-path: ts/pnpm-lock.yaml
+          registry-url: https://registry.npmjs.org
+
+      - name: The package version is the tag
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          if [ "v${version}" != "$GITHUB_REF_NAME" ]; then
+            echo "package.json says ${version}, the tag is ${GITHUB_REF_NAME}"
+            exit 1
+          fi
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+
+      # Publishes with provenance when the NPM_TOKEN secret is set. Without
+      # it the step is skipped, so the Go side of a release still goes
+      # through; publish by hand or add the token and re-run this job.
+      - name: Publish
+        if: ${{ env.NODE_AUTH_TOKEN != '' }}
+        run: npm publish --access public --provenance
+
+  github-release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+            --title "format $GITHUB_REF_NAME" --generate-notes \
+            --notes "Go: \`go get github.com/secretli/format@$GITHUB_REF_NAME\`. TypeScript: \`@secretli/format@${GITHUB_REF_NAME#v}\` on npm."

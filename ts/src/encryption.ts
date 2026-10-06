@@ -1,0 +1,234 @@
+import { xchacha20poly1305 } from "@noble/ciphers/chacha.js";
+import { hkdf } from "@noble/hashes/hkdf.js";
+import { scryptAsync } from "@noble/hashes/scrypt.js";
+import { sha512 } from "@noble/hashes/sha2.js";
+import { base64UrlDecode, base64UrlEncode } from "./base64";
+
+export interface EncodedKeySet {
+  readonly shareSecret: string;
+  readonly publicID: string;
+  readonly metadataToken: string;
+  readonly blobToken: string;
+  readonly deletionToken: string;
+}
+
+export interface SecretMeta {
+  readonly type: "text" | "bundle";
+  readonly password_protected: boolean;
+  readonly bundle_name?: string;
+}
+
+const ENVELOPE_VERSION = "v2";
+const DERIVATION_VERSION = "v1";
+const DERIVATION_PREFIX = `secretli:derivation:${DERIVATION_VERSION}`;
+const V2_NONCE_LENGTH = 24;
+const POLY1305_TAG_LENGTH = 16;
+
+/** Nonce plus Poly1305 tag stored alongside every encrypted bundle record. */
+export const BUNDLE_RECORD_OVERHEAD_BYTES = V2_NONCE_LENGTH + POLY1305_TAG_LENGTH;
+export const SHARE_SECRET_LENGTH = 32;
+
+function buildAad(publicID: Uint8Array, purpose: "meta" | "bundle"): Uint8Array {
+  const suffix = new TextEncoder().encode(purpose);
+  const aad = new Uint8Array(publicID.length + suffix.length);
+  aad.set(publicID, 0);
+  aad.set(suffix, publicID.length);
+  return aad;
+}
+
+export class KeySet {
+  private readonly shareSecret: Uint8Array;
+  private readonly metaKey: Uint8Array;
+  private readonly blobKey: Uint8Array;
+  private readonly publicID: Uint8Array;
+  private readonly metadataToken: Uint8Array;
+  private readonly blobToken: Uint8Array;
+  private readonly deletionToken: Uint8Array;
+
+  private constructor(
+    shareSecret: Uint8Array,
+    metaKey: Uint8Array,
+    blobKey: Uint8Array,
+    publicID: Uint8Array,
+    metadataToken: Uint8Array,
+    blobToken: Uint8Array,
+    deletionToken: Uint8Array,
+  ) {
+    this.shareSecret = shareSecret;
+    this.metaKey = metaKey;
+    this.blobKey = blobKey;
+    this.publicID = publicID;
+    this.metadataToken = metadataToken;
+    this.blobToken = blobToken;
+    this.deletionToken = deletionToken;
+  }
+
+  static async generateRandom(): Promise<KeySet> {
+    const shareSecret = crypto.getRandomValues(new Uint8Array(32));
+    const deletionToken = crypto.getRandomValues(new Uint8Array(32));
+    const baseKeys = deriveBaseKeys(shareSecret);
+    const blobKeys = deriveBlobKeys(shareSecret);
+    return new KeySet(
+      shareSecret,
+      baseKeys.metaKey,
+      blobKeys.blobKey,
+      baseKeys.publicID,
+      baseKeys.metadataToken,
+      blobKeys.blobToken,
+      deletionToken,
+    );
+  }
+
+  static async fromShareSecret(encoded: string, password?: string): Promise<KeySet> {
+    const shareSecretBytes = base64UrlDecode(encoded);
+    if (shareSecretBytes.length !== SHARE_SECRET_LENGTH) {
+      throw new Error("invalid share secret");
+    }
+    const baseKeys = deriveBaseKeys(shareSecretBytes);
+    const blobMaterial = password
+      ? await derivePasswordMaterial(shareSecretBytes, password)
+      : shareSecretBytes;
+    const blobKeys = deriveBlobKeys(blobMaterial);
+    const deletionToken = new Uint8Array(0);
+    return new KeySet(
+      shareSecretBytes,
+      baseKeys.metaKey,
+      blobKeys.blobKey,
+      baseKeys.publicID,
+      baseKeys.metadataToken,
+      blobKeys.blobToken,
+      deletionToken,
+    );
+  }
+
+  /**
+   * Encrypt a metadata object into the envelope format: v2$base64url(nonce)$base64url(ciphertext)
+   */
+  async encryptMeta(meta: SecretMeta): Promise<string> {
+    const nonce = crypto.getRandomValues(new Uint8Array(V2_NONCE_LENGTH));
+    const plaintext = new TextEncoder().encode(JSON.stringify(meta));
+    const aad = buildAad(this.publicID, "meta");
+    const cipher = xchacha20poly1305(this.metaKey, nonce, aad);
+    const ciphertext = cipher.encrypt(plaintext);
+
+    return `${ENVELOPE_VERSION}$${base64UrlEncode(nonce)}$${base64UrlEncode(ciphertext)}`;
+  }
+
+  /**
+   * Decrypt an envelope string back to a metadata object.
+   */
+  async decryptMeta(envelope: string): Promise<SecretMeta> {
+    const parts = envelope.split("$");
+    if (parts.length !== 3) {
+      throw new Error("invalid metadata envelope format");
+    }
+
+    const version = parts[0];
+    const nonce = base64UrlDecode(parts[1]);
+    const ciphertext = base64UrlDecode(parts[2]);
+
+    if (version !== ENVELOPE_VERSION || nonce.length !== V2_NONCE_LENGTH) {
+      throw new Error("invalid metadata envelope format");
+    }
+
+    const aad = buildAad(this.publicID, "meta");
+    const cipher = xchacha20poly1305(this.metaKey, nonce, aad);
+    const plaintext = cipher.decrypt(ciphertext);
+
+    return JSON.parse(new TextDecoder().decode(plaintext));
+  }
+
+  /** Encrypts one bundle record with a fresh random nonce; the nonce is stored in the record. */
+  encryptBundlePart(data: Uint8Array, aadSuffix: Uint8Array): Uint8Array {
+    const nonce = crypto.getRandomValues(new Uint8Array(V2_NONCE_LENGTH));
+    return this.encryptBundlePartWithNonce(data, aadSuffix, nonce);
+  }
+
+  private encryptBundlePartWithNonce(
+    data: Uint8Array,
+    aadSuffix: Uint8Array,
+    nonce: Uint8Array,
+  ): Uint8Array {
+    const aad = bundleAad(this.publicID, aadSuffix);
+    const cipher = xchacha20poly1305(this.blobKey, nonce, aad);
+    const ciphertext = cipher.encrypt(data);
+    const output = new Uint8Array(nonce.length + ciphertext.length);
+    output.set(nonce, 0);
+    output.set(ciphertext, nonce.length);
+    return output;
+  }
+
+  decryptBundlePart(record: Uint8Array, aadSuffix: Uint8Array): Uint8Array {
+    if (record.length < V2_NONCE_LENGTH + POLY1305_TAG_LENGTH) {
+      throw new Error("invalid bundle record");
+    }
+    const nonce = record.slice(0, V2_NONCE_LENGTH);
+    const ciphertext = record.slice(V2_NONCE_LENGTH);
+    const aad = bundleAad(this.publicID, aadSuffix);
+    const cipher = xchacha20poly1305(this.blobKey, nonce, aad);
+    return cipher.decrypt(ciphertext);
+  }
+
+  getEncoded(): EncodedKeySet {
+    return {
+      shareSecret: base64UrlEncode(this.shareSecret),
+      publicID: base64UrlEncode(this.publicID),
+      metadataToken: base64UrlEncode(this.metadataToken),
+      blobToken: base64UrlEncode(this.blobToken),
+      deletionToken: base64UrlEncode(this.deletionToken),
+    };
+  }
+}
+
+function bundleAad(publicID: Uint8Array, suffix: Uint8Array): Uint8Array {
+  const prefix = buildAad(publicID, "bundle");
+  const aad = new Uint8Array(prefix.length + 1 + suffix.length);
+  aad.set(prefix, 0);
+  aad[prefix.length] = 0;
+  aad.set(suffix, prefix.length + 1);
+  return aad;
+}
+
+const encoder = new TextEncoder();
+
+function deriveBaseKeys(keyBytes: Uint8Array): {
+  metaKey: Uint8Array;
+  publicID: Uint8Array;
+  metadataToken: Uint8Array;
+} {
+  const metaKey = hkdf(sha512, keyBytes, undefined, label("meta_key"), 32);
+  const publicID = hkdf(sha512, keyBytes, undefined, label("public_id"), 16);
+  const metadataToken = hkdf(sha512, keyBytes, undefined, label("metadata_token"), 32);
+  return { metaKey, publicID, metadataToken };
+}
+
+function deriveBlobKeys(keyBytes: Uint8Array): {
+  blobKey: Uint8Array;
+  blobToken: Uint8Array;
+} {
+  const blobKey = hkdf(sha512, keyBytes, undefined, label("blob_key"), 32);
+  const blobToken = hkdf(sha512, keyBytes, undefined, label("blob_token"), 32);
+  return { blobKey, blobToken };
+}
+
+/**
+ * scrypt, yielding to the browser every few milliseconds so the page keeps
+ * rendering (spinners, input) while the key is derived. The output is the
+ * same as the synchronous function's.
+ */
+function derivePasswordMaterial(shareSecret: Uint8Array, password: string): Promise<Uint8Array> {
+  return scryptAsync(new TextEncoder().encode(password), passwordSalt(shareSecret), {
+    N: 2 ** 14,
+    r: 8,
+    p: 1,
+    dkLen: 32,
+  });
+}
+
+function passwordSalt(shareSecret: Uint8Array): Uint8Array {
+  return hkdf(sha512, shareSecret, undefined, label("password_salt"), 32);
+}
+
+function label(name: string): Uint8Array {
+  return encoder.encode(`${DERIVATION_PREFIX}:${name}`);
+}

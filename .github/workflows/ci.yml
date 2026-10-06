@@ -1,0 +1,106 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Lint
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          args: ./...
+
+      - name: Vulnerabilities
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+      - name: Test
+        run: go test -race -cover ./...
+
+      # The format is the whole point of this module; it must not grow
+      # dependencies beyond the crypto primitives.
+      - name: Dependencies stay minimal
+        run: |
+          # Anything whose first path element has a dot is a module, not the
+          # standard library; only x/crypto (and its x/sys) is allowed.
+          deps=$(go list -deps ./keys ./bundle ./link | grep -E '^[^/]*\.' | grep -v -E '^(github.com/secretli/format/|golang\.org/x/crypto/|golang\.org/x/sys/)' || true)
+          if [ -n "$deps" ]; then
+            echo "unexpected dependencies:"
+            echo "$deps"
+            exit 1
+          fi
+
+  typescript:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: ts
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          package_json_file: ts/package.json
+          run_install: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+          cache-dependency-path: ts/pnpm-lock.yaml
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm build
+      - run: pnpm audit --prod --audit-level high
+
+  # Each implementation writes fresh vectors, including multi-chunk files,
+  # and the other one must read them. FORMAT.md section 10.
+  interop:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          package_json_file: ts/package.json
+          run_install: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+          cache-dependency-path: ts/pnpm-lock.yaml
+
+      - name: Install
+        working-directory: ts
+        run: pnpm install --frozen-lockfile
+
+      - name: TypeScript writes, Go reads, Go writes, TypeScript reads
+        working-directory: ts
+        run: |
+          WRITE_VECTORS="$RUNNER_TEMP/vectors-ts" VECTORS_BIG=1 pnpm exec vitest run test/vectors.test.ts
+          (cd .. && go test ./vectors -run 'TestWritesGoVectors|TestReadsVectors' -args -write-vectors="$RUNNER_TEMP/vectors-go" -big -vectors-dir="$RUNNER_TEMP/vectors-ts")
+          VECTORS_DIR="$RUNNER_TEMP/vectors-go" pnpm exec vitest run test/vectors.test.ts
