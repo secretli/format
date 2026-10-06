@@ -4,10 +4,10 @@ import path from "node:path";
 /**
  * This package is the wire format and nothing else: it may use the crypto
  * libraries and its own files, nothing more. The Go module has no dependency
- * but x/crypto for the same reason.
+ * but x/crypto and ristretto255 for the same reason.
  */
 const FORMAT_DIR = path.resolve(__dirname, "../src");
-const ALLOWED_PACKAGES = ["@noble/ciphers/", "@noble/hashes/"];
+const ALLOWED_PACKAGES = ["@noble/ciphers/", "@noble/curves/", "@noble/hashes/"];
 
 describe("the format directory", () => {
   it("imports nothing from outside itself", () => {

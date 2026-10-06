@@ -1,12 +1,29 @@
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
 import { base64UrlEncode } from "../src/base64";
 import { DEFAULT_BUNDLE_CHUNK_SIZE, decryptBundleFiles, readBundleManifest } from "../src/bundle";
+import {
+  calculateGenerator,
+  cpaceIsk,
+  cpaceShare,
+  scalarFromBytesLE,
+  scalarMultVfy,
+} from "../src/cpace";
 import { createEncryptedBundle } from "../src/encryptBundle";
 import { KeySet, type SecretMeta } from "../src/encryption";
+import {
+  channelIdentifier,
+  confirmationTag,
+  deriveTransferKeys,
+  openLink,
+  sealLink,
+} from "../src/transfer";
+import { parseCode, TRANSFER_WORDS, transferPassword } from "../src/transferWords";
 
 /**
- * The Go implementation (keys, bundle) and this one must read each other's
+ * The Go implementation (keys, bundle, transfer) and this one must read each other's
  * output; FORMAT.md section 10 describes the vector files.
  * This side writes ts-vectors.json and reads go-vectors.json.
  *
@@ -49,8 +66,37 @@ interface VectorCase {
   bundle_base64: string;
 }
 
+/** One short-code transfer with fixed scalars; bytes are hex. */
+interface TransferCase {
+  name: string;
+  code: string;
+  origin: string;
+  sid: string;
+  sender_scalar: string;
+  receiver_scalar: string;
+  link: string;
+  word_list_sha256: string;
+  derived: TransferDerived;
+  /** The delivery leg, sealed with the payload key. */
+  sealed: string;
+}
+
+interface TransferDerived {
+  password: string;
+  channel_identifier: string;
+  generator: string;
+  sender_share: string;
+  receiver_share: string;
+  k: string;
+  isk: string;
+  confirm_key: string;
+  payload_key: string;
+  confirmation: string;
+}
+
 interface Vectors {
   cases: VectorCase[];
+  transfer: TransferCase[];
 }
 
 // Big cases encrypt 20 MiB and run scrypt; slow on a busy CI runner.
@@ -153,6 +199,80 @@ async function checkCase(c: VectorCase) {
   }
 }
 
+const utf8 = (s: string) => new TextEncoder().encode(s);
+
+/** Runs both sides of a transfer case with its fixed scalars. */
+function deriveTransfer(c: Omit<TransferCase, "derived" | "sealed">): TransferDerived {
+  const code = parseCode(c.code);
+  if (!code.ok) throw new Error(`cannot parse ${JSON.stringify(c.code)}: ${code.error}`);
+  const sid = hexToBytes(c.sid);
+  const senderScalar = scalarFromBytesLE(hexToBytes(c.sender_scalar));
+  const receiverScalar = scalarFromBytesLE(hexToBytes(c.receiver_scalar));
+  const password = transferPassword(code.words);
+  const ci = channelIdentifier(c.origin);
+  const g = calculateGenerator(password, ci, sid);
+  const ya = cpaceShare(g, senderScalar);
+  const yb = cpaceShare(g, receiverScalar);
+  const k = scalarMultVfy(senderScalar, yb);
+  expect(bytesToHex(scalarMultVfy(receiverScalar, ya))).toBe(bytesToHex(k));
+  const isk = cpaceIsk(sid, k, ya, utf8("sender"), yb, utf8("receiver"));
+  const keys = deriveTransferKeys(isk, sid);
+  return {
+    password: new TextDecoder().decode(password),
+    channel_identifier: bytesToHex(ci),
+    generator: bytesToHex(g.toBytes()),
+    sender_share: bytesToHex(ya),
+    receiver_share: bytesToHex(yb),
+    k: bytesToHex(k),
+    isk: bytesToHex(isk),
+    confirm_key: bytesToHex(keys.confirm),
+    payload_key: bytesToHex(keys.payload),
+    confirmation: bytesToHex(confirmationTag(keys.confirm, ya, yb)),
+  };
+}
+
+function wordListSha256(): string {
+  return createHash("sha256").update(TRANSFER_WORDS.join("\n")).digest("hex");
+}
+
+/** Fixes the session id and both scalars from a seed byte. */
+function makeTransferCase(
+  name: string,
+  code: string,
+  origin: string,
+  seed: number,
+  link: string,
+): TransferCase {
+  const sid = Uint8Array.from({ length: 32 }, (_, i) => (seed + 0x80 + i) & 0xff);
+  const senderScalar = Uint8Array.from({ length: 32 }, (_, i) => (seed + i) & 0xff);
+  const receiverScalar = Uint8Array.from({ length: 32 }, (_, i) => (seed + 0x40 + i) & 0xff);
+  senderScalar[31] &= 0x0f;
+  receiverScalar[31] &= 0x0f;
+  const inputs = {
+    name,
+    code,
+    origin,
+    sid: bytesToHex(sid),
+    sender_scalar: bytesToHex(senderScalar),
+    receiver_scalar: bytesToHex(receiverScalar),
+    link,
+    word_list_sha256: wordListSha256(),
+  };
+  const derived = deriveTransfer(inputs);
+  return {
+    ...inputs,
+    derived,
+    sealed: bytesToHex(sealLink(hexToBytes(derived.payload_key), sid, link)),
+  };
+}
+
+function checkTransferCase(c: TransferCase) {
+  expect(wordListSha256()).toBe(c.word_list_sha256);
+  expect(deriveTransfer(c)).toEqual(c.derived);
+  const sealed = hexToBytes(c.sealed);
+  expect(openLink(hexToBytes(c.derived.payload_key), hexToBytes(c.sid), sealed)).toBe(c.link);
+}
+
 describe("cross-implementation vectors", () => {
   it("writes this implementation's vectors when asked", LONG, async () => {
     const target = process.env.WRITE_VECTORS;
@@ -185,8 +305,24 @@ describe("cross-implementation vectors", () => {
         ]),
       );
     }
+    const transfer = [
+      makeTransferCase(
+        "canonical",
+        "512-zombie-aardvark",
+        "https://secretli.app",
+        0x20,
+        "https://secretli.app/s#dHMtdmVjdG9ycy1zaGFyZS1zZWNyZXQtMDAwMDAwMDA",
+      ),
+      makeTransferCase(
+        "typed",
+        "\t9_ABAND aBbReV\n",
+        "http://localhost:8080",
+        0x60,
+        "http://localhost:8080/s#dHMtdmVjdG9ycy1zaGFyZS1zZWNyZXQtMDAwMDAwMDA!dHMtdmVjdG9ycy1kZWxldGlvbi10b2tlbi0wMDAwMDA",
+      ),
+    ];
     mkdirSync(dir, { recursive: true });
-    const vectors: Vectors = { cases };
+    const vectors: Vectors = { cases, transfer };
     writeFileSync(path.join(dir, "ts-vectors.json"), `${JSON.stringify(vectors, null, 2)}\n`);
   });
 
@@ -204,8 +340,12 @@ describe("cross-implementation vectors", () => {
       }
       const v: Vectors = JSON.parse(readFileSync(file, "utf8"));
       expect(v.cases.length).toBeGreaterThan(0);
+      expect(v.transfer?.length ?? 0).toBeGreaterThan(0);
       for (const c of v.cases) {
         await checkCase(c);
+      }
+      for (const c of v.transfer) {
+        checkTransferCase(c);
       }
     });
   }
