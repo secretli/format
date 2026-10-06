@@ -8,8 +8,10 @@ A Go implementation of the same format lives in the same repository, and the two
 
 ## Install
 
+The package is not on a registry. Each [release](https://github.com/secretli/format/releases) carries it as an archive; depend on the archive's URL:
+
 ```bash
-npm install @secretli/format
+pnpm add https://github.com/secretli/format/releases/download/v0.1.2/secretli-format-0.1.2.tgz
 ```
 
 It ships as ES modules with type declarations, for browsers and Node 20 or later.

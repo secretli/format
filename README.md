@@ -4,10 +4,10 @@ The encrypted format behind [Secretli](https://secretli.app): how a share secret
 
 - **[FORMAT.md](FORMAT.md)** is the specification. Everything else follows it.
 - **Go**: `github.com/secretli/format` with the packages `keys`, `bundle` and `link`.
-- **TypeScript**: [`@secretli/format`](https://www.npmjs.com/package/@secretli/format) on npm.
+- **TypeScript**: the package `@secretli/format` in `ts/`, attached to every release as an archive.
 - **Vectors**: each implementation encrypts fixtures that the other one's tests must decrypt. The small ones are committed under `vectors/testdata`; CI regenerates large, multi-chunk ones on both sides at every run.
 
-The library is pure. It talks to no server, keeps no state, and has no dependencies beyond the crypto primitives (`golang.org/x/crypto`, `@noble/ciphers`, `@noble/hashes`). What goes over the wire is the business of the clients that use it: the [web app](https://github.com/pscheid92/secretli) and the command-line client.
+The library is pure. It talks to no server, keeps no state, and has no dependencies beyond the crypto primitives (`golang.org/x/crypto`, `@noble/ciphers`, `@noble/hashes`). What goes over the wire is the business of the clients that use it: the [web app](https://github.com/secretli/web) and the [command-line client](https://github.com/secretli/cli).
 
 ## Go
 
@@ -41,9 +41,13 @@ _ = bundle.DecryptFile(ctx, fetch, blobKeys, manifest.Files[0], os.Stdout, nil)
 
 ## TypeScript
 
+The package is not on any registry. Every release carries it as an archive, and a project depends on that archive's URL:
+
 ```bash
-npm install @secretli/format
+pnpm add https://github.com/secretli/format/releases/download/v0.1.2/secretli-format-0.1.2.tgz
 ```
+
+From then on it is an ordinary dependency named `@secretli/format`: the lockfile pins the archive by its hash, the code imports it by name, and installs need no token. To move to a newer version, add the newer release's archive the same way. It ships as ES modules with type declarations, for browsers and Node 20 or later.
 
 ```ts
 import {
@@ -74,7 +78,13 @@ go test ./vectors -run TestWritesGoVectors -args -write-vectors=testdata
 
 ## Releases
 
-A tag `v0.1.0` is the Go module version and publishes `@secretli/format@0.1.0` to npm, after the workflow checks that `ts/package.json` carries the same number. Bump the version in one commit, tag it, push the tag.
+A tag such as `v0.1.2` releases both implementations at that version. For Go the tag is the release: the Go module proxy serves it from this repository. For TypeScript the release workflow checks that `ts/package.json` carries the same version, packs `ts/`, signs the archive with a build attestation, and attaches it to the GitHub release. To check a downloaded archive:
+
+```bash
+gh attestation verify secretli-format-0.1.2.tgz --repo secretli/format
+```
+
+Bump the version in `ts/package.json` in one commit, tag it, push the tag. Tags are permanent once the Go proxy has seen them: never move or delete one, release a new version instead.
 
 ## License
 

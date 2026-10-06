@@ -1,8 +1,10 @@
 name: Release
 
-# A tag v0.1.0 releases both implementations at that version: the Go module
-# is the tag itself, and the npm package is published from ts/ with the same
-# version number, which the workflow checks.
+# A tag v0.1.2 releases both implementations at that version. For Go the tag
+# itself is the release: the Go module proxy serves it from here. For
+# TypeScript the workflow packs ts/ and attaches the archive to the GitHub
+# release, signed with a build attestation; consumers depend on the
+# archive's URL. Nothing is published to a package registry.
 on:
   push:
     tags: ["v*"]
@@ -11,14 +13,13 @@ permissions:
   contents: read
 
 jobs:
-  npm:
+  release:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
-      contents: read
-      id-token: write # npm provenance
-    env:
-      NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      contents: write # create the release and attach the archive
+      id-token: write # sign the attestation
+      attestations: write # store the attestation
     defaults:
       run:
         working-directory: ts
@@ -35,7 +36,6 @@ jobs:
           node-version-file: .nvmrc
           cache: pnpm
           cache-dependency-path: ts/pnpm-lock.yaml
-          registry-url: https://registry.npmjs.org
 
       - name: The package version is the tag
         run: |
@@ -44,29 +44,42 @@ jobs:
             echo "package.json says ${version}, the tag is ${GITHUB_REF_NAME}"
             exit 1
           fi
+          echo "VERSION=${version}" >> "$GITHUB_ENV"
 
       - run: pnpm install --frozen-lockfile
-      - run: pnpm build
+      - run: pnpm test
 
-      # Publishes with provenance when the NPM_TOKEN secret is set. Without
-      # it the step is skipped, so the Go side of a release still goes
-      # through; publish by hand or add the token and re-run this job.
-      - name: Publish
-        if: ${{ env.NODE_AUTH_TOKEN != '' }}
-        run: npm publish --access public --provenance
+      - name: Pack
+        run: |
+          mkdir -p "$RUNNER_TEMP/dist"
+          npm pack --pack-destination "$RUNNER_TEMP/dist"
+          echo "ARCHIVE=$RUNNER_TEMP/dist/secretli-format-${VERSION}.tgz" >> "$GITHUB_ENV"
 
-  github-release:
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Attest
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: ${{ env.ARCHIVE }}
 
-      - name: Release notes
+      - name: Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/secretli-format-${VERSION}.tgz"
+          cat > "$RUNNER_TEMP/notes.md" <<EOF
+          **Go:** \`go get github.com/secretli/format@${GITHUB_REF_NAME}\`
+
+          **TypeScript:** add the attached archive as a dependency, for example with pnpm:
+
+          \`\`\`bash
+          pnpm add ${url}
+          \`\`\`
+
+          The archive carries a build attestation from this repository's release workflow. To check a downloaded copy:
+
+          \`\`\`bash
+          gh attestation verify secretli-format-${VERSION}.tgz --repo ${GITHUB_REPOSITORY}
+          \`\`\`
+          EOF
           gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
-            --title "format $GITHUB_REF_NAME" --generate-notes \
-            --notes "Go: \`go get github.com/secretli/format@$GITHUB_REF_NAME\`. TypeScript: \`@secretli/format@${GITHUB_REF_NAME#v}\` on npm."
+            --title "format ${GITHUB_REF_NAME}" --notes-file "$RUNNER_TEMP/notes.md" --generate-notes \
+            "$ARCHIVE"

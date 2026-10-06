@@ -1,6 +1,6 @@
 # The Secretli format
 
-This is the contract between everything that makes or opens a Secretli secret: the web app (`web/frontend/src/lib/format`), the command-line client (`internal/share`), and anything else that wants to interoperate. The server never sees plaintext or keys; it stores what this document calls ciphertext and token hashes, and nothing below depends on how it does that.
+This is the contract between everything that makes or opens a Secretli secret: the web app and the command-line client, which use the TypeScript (`ts/`) and Go (`keys`, `bundle`, `link`) implementations in this repository, and anything else that wants to interoperate. The server never sees plaintext or keys; it stores what this document calls ciphertext and token hashes, and nothing below depends on how it does that.
 
 Two independent implementations exist on purpose. They are checked against each other by vectors (section 10), so a change to the format is a change to both implementations, both vector files and this document, in one commit.
 
@@ -139,7 +139,7 @@ The upload limit is 1 GiB of encrypted bundle. Clients check it beforehand with 
 
 ## 10. Interop vectors
 
-`internal/share/testdata/ts-vectors.json` is written by the TypeScript implementation and read by the Go tests; `go-vectors.json` is written by Go and read by the TypeScript tests. Both hold a list of cases:
+`vectors/testdata/ts-vectors.json` is written by the TypeScript implementation and read by the Go tests; `go-vectors.json` is written by Go and read by the TypeScript tests. Both hold a list of cases:
 
 ```json
 {
@@ -167,8 +167,8 @@ The upload limit is 1 GiB of encrypted bundle. Clients check it beforehand with 
 The committed files hold small cases. CI generates fresh vectors on both sides at every run, including files of 0, 1, 4 MiB − 1, 4 MiB, 4 MiB + 1 and 8 MiB + 3 bytes, and checks that each side reads the other's. The committed files are regenerated with:
 
 ```bash
-cd web/frontend && WRITE_VECTORS=../../internal/share/testdata pnpm vitest run src/lib/format/__tests__/vectors.test.ts
-go test ./internal/share -run TestWritesGoVectors -args -write-vectors=testdata
+cd ts && WRITE_VECTORS=../vectors/testdata pnpm vitest run test/vectors.test.ts
+go test ./vectors -run TestWritesGoVectors -args -write-vectors=testdata
 ```
 
 ## 11. Changing the format
