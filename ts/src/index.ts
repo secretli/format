@@ -7,8 +7,8 @@
  * Everything here is pure. Nothing talks to a server; encrypting and
  * decrypting happen wherever the key is, and the key never leaves there.
  */
-export * from "./base64";
-export * from "./bundle";
-export * from "./encryptBundle";
-export * from "./encryption";
-export * from "./shareLink";
+export * from "./base64.js";
+export * from "./bundle.js";
+export * from "./encryptBundle.js";
+export * from "./encryption.js";
+export * from "./shareLink.js";

@@ -71,6 +71,24 @@ jobs:
       - run: pnpm build
       - run: pnpm audit --prod --audit-level high
 
+      # What consumers get is the packed archive, not the source tree: install
+      # it into an empty project and use it from plain Node, where missing
+      # file extensions in the compiled imports would break.
+      - name: The packed package works in Node
+        run: |
+          npm pack --pack-destination "$RUNNER_TEMP"
+          mkdir "$RUNNER_TEMP/smoke"
+          cd "$RUNNER_TEMP/smoke"
+          npm init -y > /dev/null
+          npm install "$RUNNER_TEMP"/secretli-format-*.tgz
+          node --input-type=module -e "
+            import { KeySet } from '@secretli/format';
+            const keys = await KeySet.generateRandom();
+            const meta = await keys.decryptMeta(await keys.encryptMeta({ type: 'text', password_protected: false }));
+            if (meta.type !== 'text') process.exit(1);
+            console.log('the packed package imports and round-trips in Node');
+          "
+
   # Each implementation writes fresh vectors, including multi-chunk files,
   # and the other one must read them. FORMAT.md section 10.
   interop:

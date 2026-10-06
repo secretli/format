@@ -2,7 +2,7 @@ import { xchacha20poly1305 } from "@noble/ciphers/chacha.js";
 import { hkdf } from "@noble/hashes/hkdf.js";
 import { scryptAsync } from "@noble/hashes/scrypt.js";
 import { sha512 } from "@noble/hashes/sha2.js";
-import { base64UrlDecode, base64UrlEncode } from "./base64";
+import { base64UrlDecode, base64UrlEncode } from "./base64.js";
 
 export interface EncodedKeySet {
   readonly shareSecret: string;

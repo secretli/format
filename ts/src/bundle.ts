@@ -1,4 +1,4 @@
-import { BUNDLE_RECORD_OVERHEAD_BYTES, type KeySet } from "./encryption";
+import { BUNDLE_RECORD_OVERHEAD_BYTES, type KeySet } from "./encryption.js";
 
 export const BUNDLE_FOOTER_LENGTH = 64;
 export const DEFAULT_BUNDLE_CHUNK_SIZE = 4 * 1024 * 1024;

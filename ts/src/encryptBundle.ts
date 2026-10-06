@@ -8,8 +8,8 @@ import {
   bundleRecordAad,
   planBundle,
   sha256Hex,
-} from "./bundle";
-import type { KeySet } from "./encryption";
+} from "./bundle.js";
+import type { KeySet } from "./encryption.js";
 
 const textEncoder = new TextEncoder();
 
