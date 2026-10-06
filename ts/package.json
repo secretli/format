@@ -1,6 +1,6 @@
 {
   "name": "@secretli/format",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "The Secretli encrypted format: key derivation, the metadata envelope and the bundle of sealed records. Pure; talks to no server.",
   "license": "MIT",
   "repository": {
@@ -21,7 +21,8 @@
   },
   "files": [
     "dist",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "sideEffects": false,
   "engines": {
