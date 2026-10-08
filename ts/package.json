@@ -1,6 +1,6 @@
 {
   "name": "@secretli/format",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "description": "The Secretli encrypted format: key derivation, the metadata envelope, the bundle of sealed records and the short-code transfer. Pure; talks to no server.",
   "license": "MIT",

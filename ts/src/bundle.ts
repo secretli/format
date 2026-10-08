@@ -11,9 +11,18 @@ export const MAX_BUNDLE_MANIFEST_BYTES = 256 * 1024;
  * (footer, manifest, content) for a few hundred bytes.
  */
 export const SMALL_BUNDLE_CACHE_BYTES = 1024 * 1024;
+/**
+ * The size writers pad the smallest bundles to, so that every short note
+ * looks the same to the server.
+ */
+export const MIN_PADDED_BUNDLE_SIZE = 4096;
 
 const BUNDLE_MAGIC = new Uint8Array([0x53, 0x4c, 0x42, 0x4e, 0x44, 0x4c, 0x32, 0x00]);
 const BUNDLE_VERSION = 2;
+/** base64url's: 64 characters, so a random byte masked to six bits picks one without bias. */
+const PADDING_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+/** crypto.getRandomValues fills at most this many bytes per call. */
+const MAX_RANDOM_VALUES_BYTES = 65536;
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
 
@@ -38,6 +47,11 @@ export interface BundleManifest {
   readonly bundleName: string;
   readonly chunkSize: number;
   readonly files: BundleFile[];
+  /**
+   * Random characters that make the bundle's size say little (FORMAT.md
+   * section 6). Writers put it last; readers ignore it, whatever it holds.
+   */
+  readonly padding?: string;
 }
 
 export interface BundleFooter {
@@ -60,12 +74,19 @@ export interface BundleRecordPlan {
 export interface BundlePlan {
   readonly bundleName: string;
   readonly files: File[];
+  /** Encrypt JSON.stringify of this, padding included, and the sizes below hold. */
   readonly manifest: BundleManifest;
   readonly records: BundleRecordPlan[];
   readonly dataSize: number;
   readonly encryptedManifestLength: number;
+  /** The number of padding characters in the manifest. */
+  readonly paddingLength: number;
+  /** The size of the finished bundle, padding included, declared to the server. */
   readonly totalSize: number;
 }
+
+/** Fills the array with random bytes; crypto.getRandomValues unless a test fixes it. */
+export type RandomFill = (bytes: Uint8Array) => void;
 
 export interface DecryptedBundleFile {
   readonly file: BundleFile;
@@ -91,7 +112,15 @@ interface BundleChunkRef {
   readonly chunk: BundleChunk;
 }
 
-export function planBundle(files: File[], bundleName = defaultBundleName(files)): BundlePlan {
+/**
+ * Lays out the bundle for these files, padded so that its size says little
+ * about its content (FORMAT.md section 6).
+ */
+export function planBundle(
+  files: File[],
+  bundleName = defaultBundleName(files),
+  randomFill: RandomFill = cryptoRandomFill,
+): BundlePlan {
   if (files.length === 0) {
     throw new Error("bundle must contain at least one file");
   }
@@ -125,18 +154,31 @@ export function planBundle(files: File[], bundleName = defaultBundleName(files))
     });
   }
 
-  const manifest: BundleManifest = {
+  const manifestOf = (padding: string): BundleManifest => ({
     version: 2,
     bundleName,
     chunkSize: DEFAULT_BUNDLE_CHUNK_SIZE,
     files: bundleFiles,
-  };
-  const manifestPlaintext = textEncoder.encode(JSON.stringify(manifest));
-  if (manifestPlaintext.length > MAX_BUNDLE_MANIFEST_BYTES) {
+    padding,
+  });
+  const unpaddedLength = manifestByteLength(manifestOf(""));
+  if (unpaddedLength > MAX_BUNDLE_MANIFEST_BYTES) {
     throw new Error("bundle manifest is too large");
   }
+  const unpaddedSize =
+    offset + unpaddedLength + BUNDLE_RECORD_OVERHEAD_BYTES + BUNDLE_FOOTER_LENGTH;
+  let paddingLength = paddedBundleSize(unpaddedSize) - unpaddedSize;
+  if (unpaddedLength + paddingLength > MAX_BUNDLE_MANIFEST_BYTES) {
+    // Padding partway hides nothing; such a bundle keeps its size.
+    paddingLength = 0;
+  }
+  const manifest = manifestOf(randomPadding(paddingLength, randomFill));
+  const manifestLength = manifestByteLength(manifest);
+  if (manifestLength !== unpaddedLength + paddingLength) {
+    throw new Error("bundle padding size mismatch");
+  }
 
-  const encryptedManifestLength = manifestPlaintext.length + BUNDLE_RECORD_OVERHEAD_BYTES;
+  const encryptedManifestLength = manifestLength + BUNDLE_RECORD_OVERHEAD_BYTES;
   return {
     bundleName,
     files,
@@ -144,8 +186,55 @@ export function planBundle(files: File[], bundleName = defaultBundleName(files))
     records,
     dataSize: offset,
     encryptedManifestLength,
+    paddingLength,
     totalSize: offset + encryptedManifestLength + BUNDLE_FOOTER_LENGTH,
   };
+}
+
+/** The size writers pad a bundle of this size to: Padmé rounding, and never less than 4,096 bytes. */
+export function paddedBundleSize(size: number): number {
+  return Math.max(MIN_PADDED_BUNDLE_SIZE, padme(size));
+}
+
+/**
+ * Rounds a size up so that it keeps only about log2(log2(size)) significant
+ * bits (Nikitin et al., "Reducing Metadata Leakage from Encrypted Files and
+ * Communication with PURBs", 2019). That costs at most 12.5%, and a size at or
+ * below a power of two stays at or below it. JavaScript's bit operators are
+ * 32-bit and Math.log2 is floating point, so this counts binary digits and
+ * divides by powers of two instead, which is exact for safe integers.
+ */
+export function padme(size: number): number {
+  if (!Number.isSafeInteger(size) || size < 0) {
+    throw new Error("invalid bundle size");
+  }
+  if (size < 2) {
+    return size;
+  }
+  const e = size.toString(2).length - 1; // floor(log2 size)
+  const s = e.toString(2).length; // floor(log2 e) + 1
+  const step = 2 ** (e - s);
+  return Math.ceil(size / step) * step;
+}
+
+function manifestByteLength(manifest: BundleManifest): number {
+  return textEncoder.encode(JSON.stringify(manifest)).length;
+}
+
+function randomPadding(length: number, randomFill: RandomFill): string {
+  const bytes = new Uint8Array(length);
+  for (let start = 0; start < length; start += MAX_RANDOM_VALUES_BYTES) {
+    randomFill(bytes.subarray(start, Math.min(start + MAX_RANDOM_VALUES_BYTES, length)));
+  }
+  let padding = "";
+  for (const byte of bytes) {
+    padding += PADDING_ALPHABET[byte & 63];
+  }
+  return padding;
+}
+
+function cryptoRandomFill(bytes: Uint8Array) {
+  crypto.getRandomValues(bytes);
 }
 
 /**
@@ -268,6 +357,11 @@ export function manifestTotalSize(manifest: BundleManifest): number {
   return manifest.files.reduce((sum, file) => sum + file.size, 0);
 }
 
+/**
+ * An upper bound on the bundle size for files of these sizes, used to check
+ * the upload limit before planning. It holds for padded bundles too: padding
+ * never takes the manifest past its cap.
+ */
 export function estimateBundleEncryptedSize(fileSizes: number[]): number {
   const chunkCount = fileSizes.reduce(
     (count, size) => count + Math.ceil(size / DEFAULT_BUNDLE_CHUNK_SIZE),

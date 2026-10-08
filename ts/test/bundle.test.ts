@@ -1,13 +1,21 @@
 import {
   BUNDLE_FOOTER_LENGTH,
   type BundleFile,
+  buildBundleFooter,
+  bundleManifestAad,
   cachingRangeFetcher,
   DEFAULT_BUNDLE_CHUNK_SIZE,
   DOWNLOAD_ALL_BUNDLE_COALESCED_PLAINTEXT_BYTES,
   decryptBundleFiles,
+  estimateBundleEncryptedSize,
+  MAX_BUNDLE_MANIFEST_BYTES,
+  MIN_PADDED_BUNDLE_SIZE,
+  paddedBundleSize,
+  padme,
   parseBundleFooter,
   planBundle,
   readBundleManifest,
+  sha256Hex,
 } from "../src/bundle";
 import { createEncryptedBundle } from "../src/encryptBundle";
 import { KeySet } from "../src/encryption";
@@ -251,7 +259,7 @@ describe("encrypted bundles", () => {
     const { blob, manifest } = await createEncryptedBundle([file], keySet);
     const bytes = await blobBytes(blob);
 
-    expect(JSON.stringify(manifest)).not.toContain("sha256");
+    expect(JSON.stringify({ ...manifest, padding: "" })).not.toContain("sha256");
     // The planned size is exact, so the server can validate the declared size.
     const plan = planBundle([file]);
     expect(plan.totalSize).toBe(bytes.length);
@@ -291,5 +299,199 @@ describe("encrypted bundles", () => {
       [0, 9],
       [10, 19],
     ]);
+  });
+});
+
+const BUNDLE_RECORD_OVERHEAD = 40;
+const PADDING_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+
+/** A plan of one empty file whose manifest, with empty padding, is exactly this long. */
+function planWithManifest(length: number) {
+  const file = new File([], "a");
+  const base = JSON.stringify({
+    version: 2,
+    bundleName: "",
+    chunkSize: DEFAULT_BUNDLE_CHUNK_SIZE,
+    files: [
+      {
+        index: 0,
+        path: "a",
+        name: "a",
+        type: "application/octet-stream",
+        size: 0,
+        chunks: [],
+      },
+    ],
+    padding: "",
+  }).length;
+  const plan = planBundle([file], "x".repeat(length - base));
+  expect(plan.totalSize - plan.paddingLength - BUNDLE_RECORD_OVERHEAD - BUNDLE_FOOTER_LENGTH).toBe(
+    length,
+  );
+  return plan;
+}
+
+describe("padding", () => {
+  it("rounds sizes with Padmé", () => {
+    const table: Array<[number, number]> = [
+      [0, 0],
+      [1, 1],
+      [2, 2],
+      [3, 3],
+      [5, 5],
+      [9, 10],
+      [100, 104],
+      [1000, 1024],
+      [4095, 4096],
+      [4096, 4096],
+      [4097, 4352],
+      [10000, 10240],
+      [10544, 10752],
+      [65535, 65536],
+      [65536, 65536],
+      [65537, 67584],
+      [2 ** 20 - 1, 2 ** 20],
+      [2 ** 20, 2 ** 20],
+      [2 ** 20 + 1, 1081344],
+      [2 ** 30 - 1, 2 ** 30],
+      [2 ** 30, 2 ** 30],
+      [2 ** 30 + 1, 1107296256],
+    ];
+    for (const [size, want] of table) {
+      expect([size, padme(size)]).toEqual([size, want]);
+    }
+  });
+
+  it("never shrinks, is stable, costs at most 12.5% and stays below the next power of two", () => {
+    const check = (size: number) => {
+      const p = padme(size);
+      const power = 2 ** (size - 1).toString(2).length;
+      if (p < size || padme(p) !== p || (p - size) * 8 > size || p > power) {
+        throw new Error(`padme(${size}) = ${p}`);
+      }
+    };
+    for (let size = 2; size <= 2 ** 17; size++) check(size);
+    for (let size = 2 ** 17; size < 2 ** 52; size = Math.floor((size * 9) / 8) + 12345) check(size);
+  });
+
+  it("pads small bundles to 4,096 bytes", () => {
+    expect(MIN_PADDED_BUNDLE_SIZE).toBe(4096);
+    for (const [size, want] of [
+      [1, 4096],
+      [300, 4096],
+      [4095, 4096],
+      [4096, 4096],
+      [4097, 4352],
+    ]) {
+      expect(paddedBundleSize(size)).toBe(want);
+    }
+  });
+
+  it("writes exactly the planned, padded size", async () => {
+    const keySet = await KeySet.generateRandom();
+    for (const size of [0, 14, 2048, 3900, 4100, 10 * 1024, 2 ** 20]) {
+      const file = new File([new Uint8Array(size)], "secret.txt", { type: "text/plain" });
+      const plan = planBundle([file]);
+      const unpadded = plan.totalSize - plan.paddingLength;
+      expect(plan.totalSize).toBe(paddedBundleSize(unpadded));
+      const padding = plan.manifest.padding ?? "";
+      expect(padding.length).toBe(plan.paddingLength);
+      expect([...padding].every((c) => PADDING_ALPHABET.includes(c))).toBe(true);
+      expect(JSON.stringify(plan.manifest).endsWith(`,"padding":"${padding}"}`)).toBe(true);
+
+      const { blob } = await createEncryptedBundle([file], keySet);
+      const bytes = await blobBytes(blob);
+      expect(bytes.length).toBe(plan.totalSize);
+      const { manifest } = await readBundleManifest(
+        async (start, end) => bytes.slice(start, end + 1),
+        keySet,
+        bytes.length,
+      );
+      expect(manifest.files).toEqual(plan.manifest.files);
+    }
+  });
+
+  it("maps random bytes to characters without bias", () => {
+    let next = 0;
+    const plan = planBundle([new File([], "a")], "a", (bytes) => {
+      for (let i = 0; i < bytes.length; i++) bytes[i] = next++ & 0xff;
+    });
+    const padding = plan.manifest.padding ?? "";
+    expect(padding.length).toBeGreaterThan(0);
+    for (let i = 0; i < padding.length; i++) {
+      expect(padding[i]).toBe(PADDING_ALPHABET[i % 64]);
+    }
+  });
+
+  it("draws large padding in pieces crypto.getRandomValues accepts", () => {
+    // A bundle just past 4 MiB rounds up by about 128 KiB, more than one call
+    // to crypto.getRandomValues may fill.
+    const file = new File([new Uint8Array(DEFAULT_BUNDLE_CHUNK_SIZE + 1)], "big.bin");
+    const plan = planBundle([file]);
+    expect(plan.paddingLength).toBeGreaterThan(65536);
+    expect(plan.totalSize).toBe(paddedBundleSize(plan.totalSize - plan.paddingLength));
+  });
+
+  it("does not pad at all when the padding would not fit the manifest", () => {
+    // 262,100 + 104 = 262,204 bytes would round to 270,336: no room.
+    const capped = planWithManifest(262100);
+    expect(capped.paddingLength).toBe(0);
+    expect(capped.manifest.padding).toBe("");
+    expect(capped.totalSize).toBe(262204);
+    // 258,100 + 104 rounds to 262,144, and that padding still fits.
+    const fits = planWithManifest(258100);
+    expect(fits.paddingLength).toBe(262144 - 258204);
+    expect(fits.totalSize).toBe(262144);
+    // The cap itself counts the empty padding field.
+    expect(() => planBundle([new File([], "a")], "x".repeat(MAX_BUNDLE_MANIFEST_BYTES))).toThrow(
+      "bundle manifest is too large",
+    );
+    // The upload estimate still covers padded bundles.
+    expect(estimateBundleEncryptedSize([0])).toBeGreaterThanOrEqual(capped.totalSize);
+    expect(estimateBundleEncryptedSize([3000])).toBeGreaterThanOrEqual(
+      planBundle([new File([new Uint8Array(3000)], "a")]).totalSize,
+    );
+  });
+
+  it("is ignored by readers, whatever it holds", async () => {
+    const keySet = await KeySet.generateRandom();
+    const file = new File(["payload"], "a.txt", { type: "text/plain" });
+    const { blob } = await createEncryptedBundle([file], keySet);
+    const bytes = await blobBytes(blob);
+    const footer = parseBundleFooter(bytes.slice(bytes.length - BUNDLE_FOOTER_LENGTH));
+    const records = bytes.slice(0, bytes.length - BUNDLE_FOOTER_LENGTH - footer.manifestLength);
+    const { padding: _, ...bare } = planBundle([file]).manifest;
+    const json = JSON.stringify(bare);
+    const open = json.slice(0, -1);
+
+    for (const manifestJson of [
+      json,
+      `${open},"padding":""}`,
+      `{"padding":"AAAA",${json.slice(1)}`,
+      `${open},"padding":{"n":[1,2,3]}}`,
+      `${open},"padding":"<&>\\u00e9 \\n"}`,
+      `${open},"padding":"x","later":true}`,
+    ]) {
+      const encrypted = keySet.encryptBundlePart(
+        new TextEncoder().encode(manifestJson),
+        bundleManifestAad(),
+      );
+      const trailer = buildBundleFooter({
+        version: 2,
+        footerLength: BUNDLE_FOOTER_LENGTH,
+        manifestLength: encrypted.length,
+        manifestSha256: await sha256Hex(encrypted),
+      });
+      const assembled = new Uint8Array(records.length + encrypted.length + trailer.length);
+      assembled.set(records, 0);
+      assembled.set(encrypted, records.length);
+      assembled.set(trailer, records.length + encrypted.length);
+      const fetchRange = async (start: number, end: number) => assembled.slice(start, end + 1);
+
+      const { manifest } = await readBundleManifest(fetchRange, keySet, assembled.length);
+      expect(manifest.files).toEqual(bare.files);
+      const [{ blob: decrypted }] = await decryptBundleFiles(manifest.files, keySet, fetchRange);
+      await expect(decrypted.text()).resolves.toBe("payload");
+    }
   });
 });
