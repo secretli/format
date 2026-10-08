@@ -22,7 +22,9 @@ import (
 // The TypeScript implementation (ts/) and this one must read each other's
 // output; FORMAT.md section 10 describes the vector files.
 // testdata/ts-vectors.json is written by the TypeScript tests and read here;
-// testdata/go-vectors.json is written here and read there.
+// testdata/go-vectors.json is written here and read there. The two
+// *-unpadded.json files hold bundles from before writers padded them; they
+// are never regenerated, so that readers keep reading such bundles.
 //
 // Regenerate the committed Go vectors with
 //
@@ -136,7 +138,10 @@ func TestReadsVectors(t *testing.T) {
 		}
 		files = append(files, more...)
 	}
+	unpadded := filepath.Join("testdata", "ts-vectors-unpadded.json")
+	files = append(files, unpadded)
 	for _, path := range files {
+		padded := path != unpadded
 		t.Run(filepath.Base(path), func(t *testing.T) {
 			raw, err := os.ReadFile(path)
 			if err != nil {
@@ -150,7 +155,7 @@ func TestReadsVectors(t *testing.T) {
 				t.Fatalf("%d cases and %d transfer cases; both are required", len(v.Cases), len(v.Transfer))
 			}
 			for _, c := range v.Cases {
-				t.Run(c.Name, func(t *testing.T) { checkCase(t, c) })
+				t.Run(c.Name, func(t *testing.T) { checkCase(t, c, padded) })
 			}
 			for _, c := range v.Transfer {
 				t.Run("transfer/"+c.Name, func(t *testing.T) { checkTransferCase(t, c) })
@@ -159,7 +164,10 @@ func TestReadsVectors(t *testing.T) {
 	}
 }
 
-func checkCase(t *testing.T, c vectorCase) {
+// checkCase reads the case's bundle. For a padded one it also plans the same
+// files itself and expects the other side's bundle to have exactly that size,
+// so both writers pad alike.
+func checkCase(t *testing.T, c vectorCase, padded bool) {
 	t.Helper()
 	base, err := keys.FromShareSecret(c.ShareSecret, "")
 	if err != nil {
@@ -211,6 +219,22 @@ func checkCase(t *testing.T, c vectorCase) {
 			t.Errorf("%s: got %d bytes, want %d, and not the same", want.Name, out.Len(), len(want.content(t)))
 		}
 	}
+
+	if !padded {
+		return
+	}
+	sources := make([]bundle.Source, len(c.Files))
+	for i, f := range c.Files {
+		content := f.content(t)
+		sources[i] = bundle.Source{Name: f.Name, Type: f.Type, Size: int64(len(content)), Reader: bytes.NewReader(content)}
+	}
+	plan, err := bundle.NewPlan(sources, c.BundleName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if int64(len(data)) != plan.TotalSize {
+		t.Errorf("bundle is %d bytes, this side pads the same files to %d", len(data), plan.TotalSize)
+	}
 }
 
 func TestWritesGoVectors(t *testing.T) {
@@ -233,6 +257,10 @@ func TestWritesGoVectors(t *testing.T) {
 			{Name: "hello.txt", Type: "text/plain", ContentBase64: &text},
 			{Name: "empty.bin", Type: "application/octet-stream", ContentBase64: &empty},
 			{Name: "bytes.bin", Type: "application/octet-stream", ContentBase64: &bytesB64},
+		}),
+		// Above the 4,096-byte minimum, so Padmé rounds it: to 10,752 bytes.
+		makeCase(t, "rounded", 0xb0, "", "bundle", "", []vectorFile{
+			{Name: "ten-thousand.bin", Type: "application/octet-stream", Generated: &generated{Seed: 8, Length: 10000}},
 		}),
 	}, Transfer: []transferCase{
 		makeTransferCase(t, "canonical", "7-acid-rocket", "https://secretli.app", 0x10,

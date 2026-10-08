@@ -105,11 +105,14 @@ The manifest lists the files and where their records are. Its JSON is encrypted 
         { "index": 0, "offset": 0, "length": 45, "plaintextSize": 5 }
       ]
     }
-  ]
+  ],
+  "padding": "Xq0v…"
 }
 ```
 
 `offset` counts bytes from the start of the bundle; `length` is the record's length. `type` is `application/octet-stream` when the type is unknown. The default bundle name is the file's name for one file (or `Secretli file` when it has none) and `Secretli bundle (N files)` for several. The encoded manifest must not exceed 256 KiB (262,144 bytes).
+
+`padding` is there because the server sees the bundle's exact size, which would otherwise give away a note's length to the byte. It is the manifest's last field and holds random characters from the base64url alphabet (`A–Z a–z 0–9 - _`), each drawn uniformly by a CSPRNG. Writers SHOULD size it so that the bundle is `max(4096, padme(L))` bytes, where `L` is the bundle's size with `"padding": ""` and `padme` is the Padmé rounding (Nikitin et al., "Reducing Metadata Leakage from Encrypted Files and Communication with PURBs", 2019): with `E = floor(log2 L)` and `S = floor(log2 E) + 1`, round `L` up to a multiple of `2^(E − S)`. That costs at most 12.5%, usually much less, and never takes a bundle past a power of two it was at or below. If the padded manifest would exceed 256 KiB, the writer leaves `padding` empty, since padding partway hides nothing. So bundles below 8 MiB are padded unless they have very many files, those up to 16 MiB almost always, and larger ones only when the padding happens to fit: about half of those up to 32 MiB, a quarter up to 64 MiB, ever fewer beyond. A bundle that is not padded keeps its exact size. Readers MUST ignore `padding`, whatever it holds, and a manifest without it is as valid as one with it.
 
 Readers validate before trusting a manifest: version 2; `chunkSize` 4,194,304; a non-empty bundle name; at least one file; file and chunk indices equal to their positions; non-empty `path` and `name`; `size` ≥ 0; every chunk with `0 < plaintextSize ≤ chunkSize` and `length = plaintextSize + 40`; chunk sizes adding up to the file's size (a file of size 0 has no chunks); and all records together tiling the bytes from offset 0 up to the manifest exactly, with neither gap nor overlap.
 
@@ -134,9 +137,9 @@ The server serves the bundle by byte range (`GET /api/v1/secrets/{public_id}/blo
 
 ## 9. Making a secret
 
-The client derives everything, encrypts the metadata envelope, plans the bundle so that its exact size is known, and starts an upload session (`POST /api/v1/secrets/uploads`) with the public id, the three tokens, the envelope, the lifetime (`5m`, `10m`, `15m`, `1h`, `4h`, `12h`, `1d`, `3d`, `7d`), the one-time flag and the bundle size. It uploads the bundle as parts of up to 32 MiB (the server states the size), every part but the last at least 5 MiB, each with its SHA-256, and completes the session. Records are encrypted one at a time, so neither side ever holds the bundle whole.
+The client derives everything, encrypts the metadata envelope, plans the bundle so that its exact size, padding included, is known, and starts an upload session (`POST /api/v1/secrets/uploads`) with the public id, the three tokens, the envelope, the lifetime (`5m`, `10m`, `15m`, `1h`, `4h`, `12h`, `1d`, `3d`, `7d`), the one-time flag and the bundle size. It uploads the bundle as parts of up to 32 MiB (the server states the size), every part but the last at least 5 MiB, each with its SHA-256, and completes the session. Records are encrypted one at a time, so neither side ever holds the bundle whole.
 
-The upload limit is 1 GiB of encrypted bundle. Clients check it beforehand with the estimate `plaintext bytes + records × 40 + 262,144 + 40 + 64`.
+The upload limit is 1 GiB of encrypted bundle. Clients check it beforehand with the estimate `plaintext bytes + records × 40 + 262,144 + 40 + 64`, which padding never exceeds, since it never takes the manifest past 256 KiB.
 
 ## 10. Interop vectors
 
@@ -192,7 +195,7 @@ A reader parses the code as typed, runs both sides with the given scalars, expec
 
 `password` is empty for a secret without one, and `password_blob_token` then equals `blob_token`. `generated` content comes from xorshift32: with a 32-bit state `x` starting at `seed`, each byte is the low byte of `x` after `x ^= x << 13; x ^= x >> 17; x ^= x << 5` (unsigned 32-bit arithmetic). It lets the vectors cover multi-chunk files without storing megabytes of plaintext.
 
-The committed files hold small cases. CI generates fresh vectors on both sides at every run, including files of 0, 1, 4 MiB − 1, 4 MiB, 4 MiB + 1 and 8 MiB + 3 bytes, and checks that each side reads the other's. The committed files are regenerated with:
+The committed files hold small cases. CI generates fresh vectors on both sides at every run, including files of 0, 1, 4 MiB − 1, 4 MiB, 4 MiB + 1 and 8 MiB + 3 bytes, and checks that each side reads the other's. Padding is random like the nonces, so a reader also plans the case's files itself and expects the other side's bundle to have exactly the planned size: both writers pad alike. `go-vectors-unpadded.json` and `ts-vectors-unpadded.json` hold bundles from before writers padded; they are never regenerated, and readers read them too. The other two files are regenerated with:
 
 ```bash
 cd ts && WRITE_VECTORS=../vectors/testdata pnpm vitest run test/vectors.test.ts
@@ -261,4 +264,4 @@ The relay is the server's (`/api/v1/transfers`: open, claim by nameplate, each l
 
 ## 12. Changing the format
 
-Bump what changes: `v2` in the envelope, the bundle magic and version, the derivation prefix, the `v1` in the transfer's channel identifier and key labels. Keep reading the old form for as long as old secrets can exist, which is seven days plus a week of tombstones. Change both implementations and both vector files, and update this document, in the same change.
+Bump what changes: `v2` in the envelope, the bundle magic and version, the derivation prefix, the `v1` in the transfer's channel identifier and key labels. Keep reading the old form for as long as old secrets can exist, which is seven days. A field that readers ignore, like the manifest's `padding`, needs no bump. Change both implementations and both vector files, and update this document, in the same change.

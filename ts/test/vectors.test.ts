@@ -3,7 +3,12 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 
 import path from "node:path";
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
 import { base64UrlEncode } from "../src/base64";
-import { DEFAULT_BUNDLE_CHUNK_SIZE, decryptBundleFiles, readBundleManifest } from "../src/bundle";
+import {
+  DEFAULT_BUNDLE_CHUNK_SIZE,
+  decryptBundleFiles,
+  planBundle,
+  readBundleManifest,
+} from "../src/bundle";
 import {
   calculateGenerator,
   cpaceIsk,
@@ -25,7 +30,9 @@ import { parseCode, TRANSFER_WORDS, transferPassword } from "../src/transferWord
 /**
  * The Go implementation (keys, bundle, transfer) and this one must read each other's
  * output; FORMAT.md section 10 describes the vector files.
- * This side writes ts-vectors.json and reads go-vectors.json.
+ * This side writes ts-vectors.json and reads go-vectors.json. The two
+ * *-unpadded.json files hold bundles from before writers padded them; they are
+ * never regenerated, so that readers keep reading such bundles.
  *
  * Regenerate the committed TypeScript vectors with
  *
@@ -174,7 +181,12 @@ async function makeCase(
   };
 }
 
-async function checkCase(c: VectorCase) {
+/**
+ * Reads the case's bundle. For a padded one it also plans the same files
+ * itself and expects the other side's bundle to have exactly that size, so
+ * both writers pad alike.
+ */
+async function checkCase(c: VectorCase, padded: boolean) {
   const base = await KeySet.fromShareSecret(c.share_secret);
   const encoded = base.getEncoded();
   expect(encoded.publicID).toBe(c.derived.public_id);
@@ -196,6 +208,14 @@ async function checkCase(c: VectorCase) {
     const want = contentOf(c.files[i]);
     expect(got.length).toBe(want.length);
     expect(Buffer.from(got).equals(Buffer.from(want))).toBe(true);
+  }
+
+  if (padded) {
+    // Planning reads only names, types and sizes.
+    const sized = c.files.map(
+      (f) => new File([new Uint8Array(contentOf(f).length)], f.name, { type: f.type }),
+    );
+    expect(bytes.length).toBe(planBundle(sized, c.bundle_name).totalSize);
   }
 }
 
@@ -290,6 +310,14 @@ describe("cross-implementation vectors", () => {
         { name: "empty.bin", type: "application/octet-stream", content_base64: "" },
         { name: "bytes.bin", type: "application/octet-stream", content_base64: bytes },
       ]),
+      // Above the 4,096-byte minimum, so Padmé rounds it: to 10,752 bytes.
+      await makeCase("rounded", 0x31, "", "bundle", [
+        {
+          name: "ten-thousand.bin",
+          type: "application/octet-stream",
+          generated: { seed: 18, length: 10000 },
+        },
+      ]),
     ];
     if (process.env.VECTORS_BIG) {
       const chunk = DEFAULT_BUNDLE_CHUNK_SIZE;
@@ -333,6 +361,8 @@ describe("cross-implementation vectors", () => {
       if (name.endsWith(".json")) files.push(path.join(dir, name));
     }
   }
+  const unpadded = path.join(TESTDATA, "go-vectors-unpadded.json");
+  files.push(unpadded);
   for (const file of files) {
     it(`reads what the other implementation wrote: ${path.basename(file)}`, LONG, async () => {
       if (!existsSync(file)) {
@@ -342,7 +372,7 @@ describe("cross-implementation vectors", () => {
       expect(v.cases.length).toBeGreaterThan(0);
       expect(v.transfer?.length ?? 0).toBeGreaterThan(0);
       for (const c of v.cases) {
-        await checkCase(c);
+        await checkCase(c, file !== unpadded);
       }
       for (const c of v.transfer) {
         checkTransferCase(c);

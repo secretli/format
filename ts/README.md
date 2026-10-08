@@ -44,7 +44,7 @@ const read = await readBundleManifest(range, blobKeys, bytes.length);
 const files = await decryptBundleFiles(read.manifest.files, blobKeys, range);
 ```
 
-`createEncryptedBundle` builds the whole bundle in memory, which suits small secrets. For large files, encrypt record by record from `planBundle` and stream the records to wherever they go. Uploading and retrieval sessions belong to the Secretli server's API, not to this package.
+`createEncryptedBundle` builds the whole bundle in memory, which suits small secrets. For large files, encrypt record by record from `planBundle` and stream the records to wherever they go. The plan's manifest carries the padding that keeps the bundle's size from saying much (FORMAT.md section 6), so encrypting `JSON.stringify(plan.manifest)` after the records and adding the footer gives exactly `plan.totalSize` bytes. Uploading and retrieval sessions belong to the Secretli server's API, not to this package.
 
 A link goes to another device with a code such as `7-acid-rocket`:
 

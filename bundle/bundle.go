@@ -6,6 +6,7 @@
 package bundle
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
@@ -13,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/bits"
 	"sort"
 
 	"github.com/secretli/format/keys"
@@ -33,8 +35,15 @@ const (
 	// SmallBundleBytes: bundles up to this size are fetched whole, in one
 	// request, instead of footer, manifest and records separately.
 	SmallBundleBytes = 1024 * 1024
+	// MinPaddedSize is the size writers pad the smallest bundles to, so that
+	// every short note looks the same to the server.
+	MinPaddedSize = 4096
 
 	version = 2
+
+	// paddingAlphabet is base64url's: 64 characters, so a random byte masked
+	// to six bits picks one without bias.
+	paddingAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
 )
 
 var magic = []byte{0x53, 0x4c, 0x42, 0x4e, 0x44, 0x4c, 0x32, 0x00}
@@ -70,12 +79,20 @@ type File struct {
 	Chunks []Chunk `json:"chunks"`
 }
 
-// Manifest lists the files and where their records are.
+// Manifest lists the files and where their records are. It has no padding
+// field on purpose: readers ignore the padding, whatever it holds.
 type Manifest struct {
 	Version    int    `json:"version"`
 	BundleName string `json:"bundleName"`
 	ChunkSize  int64  `json:"chunkSize"`
 	Files      []File `json:"files"`
+}
+
+// paddedManifest is the manifest as writers encode it, with the padding as
+// its last field.
+type paddedManifest struct {
+	Manifest
+	Padding string `json:"padding"`
 }
 
 // TotalSize is the plaintext size of every file together.
@@ -120,18 +137,28 @@ type Record struct {
 // Plan is the layout of a bundle before it is encrypted.
 type Plan struct {
 	Manifest Manifest
-	// ManifestJSON is the manifest exactly as it will be encrypted.
+	// ManifestJSON is the manifest exactly as it will be encrypted, padding
+	// included.
 	ManifestJSON []byte
 	Records      []Record
 	// DataSize is the size of all records; the manifest and footer follow.
 	DataSize                int64
 	EncryptedManifestLength int64
-	// TotalSize is the size of the finished bundle, declared to the server.
+	// PaddingLength is the number of padding characters in the manifest.
+	PaddingLength int64
+	// TotalSize is the size of the finished bundle, padding included,
+	// declared to the server.
 	TotalSize int64
 }
 
-// NewPlan lays out the bundle for these sources.
+// NewPlan lays out the bundle for these sources, padded so that its size
+// says little about its content (FORMAT.md section 6).
 func NewPlan(sources []Source, bundleName string) (*Plan, error) {
+	return newPlan(sources, bundleName, rand.Reader)
+}
+
+// newPlan draws the padding from random, so tests can fix it.
+func newPlan(sources []Source, bundleName string, random io.Reader) (*Plan, error) {
 	if len(sources) == 0 {
 		return nil, ErrEmpty
 	}
@@ -163,12 +190,31 @@ func NewPlan(sources []Source, bundleName string) (*Plan, error) {
 	}
 
 	manifest := Manifest{Version: version, BundleName: bundleName, ChunkSize: ChunkSize, Files: files}
-	manifestJSON, err := json.Marshal(manifest)
+	manifestJSON, err := json.Marshal(paddedManifest{Manifest: manifest})
 	if err != nil {
 		return nil, fmt.Errorf("encode manifest: %w", err)
 	}
 	if len(manifestJSON) > MaxManifestBytes {
 		return nil, ErrManifestTooLarge
+	}
+	unpaddedLength := int64(len(manifestJSON))
+	unpaddedSize := offset + unpaddedLength + RecordOverhead + FooterLength
+	paddingLength := PaddedSize(unpaddedSize) - unpaddedSize
+	if unpaddedLength+paddingLength > MaxManifestBytes {
+		// Padding partway hides nothing; such a bundle keeps its size.
+		paddingLength = 0
+	}
+	if paddingLength > 0 {
+		padding, err := randomPadding(random, paddingLength)
+		if err != nil {
+			return nil, err
+		}
+		if manifestJSON, err = json.Marshal(paddedManifest{Manifest: manifest, Padding: padding}); err != nil {
+			return nil, fmt.Errorf("encode manifest: %w", err)
+		}
+		if int64(len(manifestJSON)) != unpaddedLength+paddingLength {
+			return nil, errors.New("bundle padding size mismatch")
+		}
 	}
 	encryptedManifestLength := int64(len(manifestJSON)) + RecordOverhead
 	return &Plan{
@@ -177,8 +223,42 @@ func NewPlan(sources []Source, bundleName string) (*Plan, error) {
 		Records:                 records,
 		DataSize:                offset,
 		EncryptedManifestLength: encryptedManifestLength,
+		PaddingLength:           paddingLength,
 		TotalSize:               offset + encryptedManifestLength + FooterLength,
 	}, nil
+}
+
+// PaddedSize is the size writers pad a bundle of this size to: Padmé
+// rounding, and never less than MinPaddedSize.
+func PaddedSize(size int64) int64 {
+	return max(MinPaddedSize, Padme(size))
+}
+
+// Padme rounds a size up so that it keeps only about log2(log2(size))
+// significant bits (Nikitin et al., "Reducing Metadata Leakage from
+// Encrypted Files and Communication with PURBs", 2019). That costs at most
+// 12.5% and leaks only O(log log size) bits, and a size at or below a power
+// of two stays at or below it.
+func Padme(size int64) int64 {
+	if size < 2 {
+		return size
+	}
+	e := bits.Len64(uint64(size)) - 1 // floor(log2 size)
+	s := bits.Len(uint(e))            // floor(log2 e) + 1
+	mask := int64(1)<<(e-s) - 1
+	return (size + mask) &^ mask
+}
+
+// randomPadding draws n characters of the padding alphabet.
+func randomPadding(random io.Reader, n int64) (string, error) {
+	b := make([]byte, n)
+	if _, err := io.ReadFull(random, b); err != nil {
+		return "", fmt.Errorf("draw padding: %w", err)
+	}
+	for i := range b {
+		b[i] = paddingAlphabet[b[i]&63]
+	}
+	return string(b), nil
 }
 
 // DefaultBundleName is what the web app calls a bundle of these files.
@@ -193,7 +273,8 @@ func DefaultBundleName(names []string) string {
 }
 
 // EstimateEncryptedSize is an upper bound on the bundle size for files of
-// these sizes, used to check the upload limit before planning.
+// these sizes, used to check the upload limit before planning. It holds for
+// padded bundles too: padding never takes the manifest past its cap.
 func EstimateEncryptedSize(sizes []int64) int64 {
 	var chunks, plaintext int64
 	for _, size := range sizes {
