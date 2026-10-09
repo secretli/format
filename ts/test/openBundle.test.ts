@@ -1,5 +1,3 @@
-import { cachingRangeFetcher } from "../src/bundle";
-import { createEncryptedBundle } from "../src/encryptBundle";
 import { KeySet } from "../src/encryption";
 import { openBundle } from "../src/openBundle";
 import {
@@ -48,7 +46,6 @@ describe("opening a bundle", () => {
       const { bytes, plan } = await bundleOf(files, keySet);
       const { fetch, ranges } = countingFetcher(bytes);
       const opened = await openBundle(fetch, keySet, bytes.length);
-      expect(opened.version).toBe(3);
       expect(opened.files).toEqual([
         { index: 0, name: "file-0.bin", type: "application/octet-stream", size: 5 * MiB },
       ]);
@@ -62,21 +59,18 @@ describe("opening a bundle", () => {
         },
       });
       expect(hex(await blobBytes(blob))).toBe(hex(contents[0]));
-      // The tail, the first MiB with its 15 whole chunks, then the rest of the file's chunks
-      // in requests of 16 (1 MiB).
+      // The first MiB with its 15 whole chunks, then the rest of the file's chunks in
+      // requests of 16 (1 MiB).
       const lastChunk = Math.floor((plan.contentLength - 1) / BUNDLE_PIECE_SIZE);
-      const want: Array<[number, number]> = [
-        [bytes.length - 64, bytes.length - 1],
-        [0, MiB - 1],
-      ];
+      const want: Array<[number, number]> = [[0, MiB - 1]];
       for (let first = 15; first <= lastChunk; first += 16) {
         want.push([chunkStart(first), chunkStart(Math.min(first + 16, lastChunk + 1)) - 1]);
       }
       expect(ranges).toEqual(want);
       expect(progress.at(-1)).toBe(5 * MiB);
       expect(progress).toEqual([...progress].sort((a, b) => a - b));
-      // Once for what the first MiB held, then once per request.
-      expect(progress.length).toBe(want.length - 1);
+      // Once for what the first MiB held, then once per request after it.
+      expect(progress.length).toBe(want.length);
     },
     SLOW,
   );
@@ -99,7 +93,6 @@ describe("opening a bundle", () => {
       expect(chunkOf(3) - chunkOf(1) - 1).toBeLessThan(16);
       expect(chunkOf(5) - chunkOf(3) - 1).toBeGreaterThanOrEqual(16);
       expect(ranges).toEqual([
-        [bytes.length - 64, bytes.length - 1],
         [0, MiB - 1],
         [chunkStart(chunkOf(1)), chunkStart(chunkOf(3) + 1) - 1],
         [chunkStart(chunkOf(5)), chunkStart(chunkOf(5) + 1) - 1],
@@ -135,7 +128,7 @@ describe("opening a bundle", () => {
         const opened = await openBundle(fetch, keySet, bytes.length);
         const decrypted = await opened.decryptFiles([1, 3]);
         expect(hex(await blobBytes(decrypted[1].blob))).toBe(hex(contents[3]));
-        expect(ranges.length - 2).toBe(requests);
+        expect(ranges.length - 1).toBe(requests);
       }
     },
     SLOW,
@@ -155,8 +148,8 @@ describe("opening a bundle", () => {
       for (const i of [0, 1, 299, 5000, 9999]) {
         expect(hex(await blobBytes(decrypted[i].blob))).toBe(hex(contents[i]));
       }
-      // The tail, the first MiB, and the rest in one request.
-      expect(ranges.length).toBe(3);
+      // The first MiB, and the rest in one request.
+      expect(ranges.length).toBe(2);
     },
     SLOW,
   );
@@ -179,7 +172,6 @@ describe("opening a bundle", () => {
       const opened = await openBundle(fetch, keySet, bytes.length);
       const lastListChunk = Math.floor((3 + plan.listBytes.length) / BUNDLE_PIECE_SIZE);
       expect(ranges).toEqual([
-        [bytes.length - 64, bytes.length - 1],
         [0, MiB - 1],
         [MiB, chunkStart(lastListChunk + 1) - 1],
       ]);
@@ -190,7 +182,7 @@ describe("opening a bundle", () => {
     SLOW,
   );
 
-  it("reads a small bundle with one request, with or without a caching fetcher", async () => {
+  it("reads a small bundle with one request", async () => {
     const keySet = await KeySet.generateRandom();
     // More than 64 KiB of list: it spans two chunks.
     const files = Array.from({ length: 1500 }, (_, i) =>
@@ -203,48 +195,13 @@ describe("opening a bundle", () => {
     const { bytes, plan } = await bundleOf(files, keySet);
     expect(plan.listBytes.length).toBeGreaterThan(BUNDLE_PIECE_SIZE);
     expect(bytes.length).toBeLessThanOrEqual(MiB);
-    for (const wrapped of [false, true]) {
-      const { fetch, ranges } = countingFetcher(bytes);
-      const fetchRange = wrapped ? await cachingRangeFetcher(fetch, bytes.length) : fetch;
-      const opened = await openBundle(fetchRange, keySet, bytes.length);
-      const decrypted = await opened.decryptFiles();
-      await expect(decrypted[1499].blob.text()).resolves.toBe("1499");
-      expect(decrypted[1499].blob.type).toBe("text/plain");
-      expect(ranges.length).toBe(1);
-    }
+    const { fetch, ranges } = countingFetcher(bytes);
+    const opened = await openBundle(fetch, keySet, bytes.length);
+    const decrypted = await opened.decryptFiles();
+    await expect(decrypted[1499].blob.text()).resolves.toBe("1499");
+    expect(decrypted[1499].blob.type).toBe("text/plain");
+    expect(ranges).toEqual([[0, bytes.length - 1]]);
   });
-
-  it(
-    "reads version 2 bundles the same way",
-    async () => {
-      const keySet = await KeySet.generateRandom();
-      for (const [contents, requests] of [
-        [[new TextEncoder().encode("hello"), new Uint8Array(0)], 1],
-        [[xorshift32(1, 3), xorshift32(2, 4 * MiB + 1)], 3],
-      ] as const) {
-        const files = contents.map((c, i) => fileOf(c, `v2-${i}`));
-        const bytes = await blobBytes((await createEncryptedBundle(files, keySet)).blob);
-        const { fetch, ranges } = countingFetcher(bytes);
-        const opened = await openBundle(fetch, keySet, bytes.length);
-        expect(opened.version).toBe(2);
-        expect(opened.manifest?.files.length).toBe(2);
-        expect(opened.files.map((f) => [f.name, f.size])).toEqual(
-          contents.map((c, i) => [`v2-${i}`, c.length]),
-        );
-        const progress: number[] = [];
-        const decrypted = await opened.decryptFiles(undefined, {
-          onProgress: ({ decryptedBytes }) => progress.push(decryptedBytes),
-        });
-        for (const [i, { blob }] of decrypted.entries()) {
-          expect(hex(await blobBytes(blob))).toBe(hex(contents[i]));
-        }
-        expect(progress.at(-1)).toBe(opened.totalSize);
-        // A small bundle in one request; a large one: footer (once), manifest, records.
-        expect(ranges.length).toBe(requests);
-      }
-    },
-    SLOW,
-  );
 });
 
 describe("a tampered bundle", () => {
@@ -321,7 +278,7 @@ describe("a tampered bundle", () => {
       await expect(openBundle(fetch, keySet, size), String(size)).rejects.toThrow(
         "invalid bundle size",
       );
-      if (size < 64) expect(ranges).toEqual([]);
+      expect(ranges).toEqual([]);
     }
     const tiny = sealStream(keySet, new Uint8Array([0]));
     await expect(

@@ -44,7 +44,7 @@ const decrypted = await opened.decryptFiles([0, 2], {
 
 `encryptStream` yields the 16-byte prefix and then one sealed 64 KiB chunk after another, reading each file in 4 MiB slices; `cutIntoParts` turns that into parts of exactly the upload part size, the last one shorter. `plannedBundleSize(files)` is the plan's size alone. `createStreamBundle` builds a whole bundle in memory, which suits tests and small secrets.
 
-`openBundle` fetches a small bundle in one request, and of a larger one only what it needs: the last 64 bytes to tell the versions apart, the first MiB with the file list, then the chunks of the files asked for, neighbouring ones in one request. `decryptFiles` returns one `Blob` per file, extended as chunks arrive, so a download of a gigabyte never sits in the JavaScript heap. It reads bundles of version 2 too; `planBundle`, `createEncryptedBundle`, `readBundleManifest` and `decryptBundleFiles` still write and read them while clients move to version 3. Uploading and retrieval sessions belong to the Secretli server's API, not to this package.
+`openBundle` fetches a small bundle in one request, and of a larger one only what it needs: the first MiB with the file list, then the chunks of the files asked for, neighbouring ones in one request. `decryptFiles` returns one `Blob` per file, extended as chunks arrive, so a download of a gigabyte never sits in the JavaScript heap. Since 0.5.0 it reads bundle version 3 only; a bundle of version 2 fails to open like a damaged one. Uploading and retrieval sessions belong to the Secretli server's API, not to this package.
 
 A link goes to another device with a code such as `7-acid-rocket`:
 

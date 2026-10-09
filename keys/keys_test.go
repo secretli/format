@@ -178,47 +178,6 @@ func TestMetaEnvelopeRoundTrip(t *testing.T) {
 	}
 }
 
-func TestRecordsAreBoundToTheirPlace(t *testing.T) {
-	ks, err := FromShareSecret(fixedSecret(t), "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	plaintext := []byte("sixteen bytes!!!")
-	record, err := ks.EncryptRecord(plaintext, []byte("chunk:0:0:16"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(record) != len(plaintext)+RecordOverhead {
-		t.Fatalf("record length = %d, want %d", len(record), len(plaintext)+RecordOverhead)
-	}
-	got, err := ks.DecryptRecord(record, []byte("chunk:0:0:16"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(got, plaintext) {
-		t.Errorf("plaintext = %q, want %q", got, plaintext)
-	}
-	if _, err := ks.DecryptRecord(record, []byte("chunk:0:1:16")); !errors.Is(err, ErrDecrypt) {
-		t.Errorf("moved record: err = %v, want ErrDecrypt", err)
-	}
-	record[len(record)-1] ^= 1
-	if _, err := ks.DecryptRecord(record, []byte("chunk:0:0:16")); !errors.Is(err, ErrDecrypt) {
-		t.Errorf("flipped bit: err = %v, want ErrDecrypt", err)
-	}
-	if _, err := ks.DecryptRecord(record[:RecordOverhead-1], []byte("chunk:0:0:16")); !errors.Is(err, ErrDecrypt) {
-		t.Errorf("too short: err = %v, want ErrDecrypt", err)
-	}
-
-	// Two encryptions of the same record differ: the nonce is fresh each time.
-	again, err := ks.EncryptRecord(plaintext, []byte("chunk:0:0:16"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if bytes.Equal(again[:NonceLength], record[:NonceLength]) {
-		t.Error("nonce was reused")
-	}
-}
-
 // openMeta returns an envelope's plaintext, padding included.
 func openMeta(t *testing.T, ks *KeySet, envelope string) []byte {
 	t.Helper()

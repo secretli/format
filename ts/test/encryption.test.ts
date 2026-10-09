@@ -4,15 +4,17 @@ import { sha512 } from "@noble/hashes/sha2.js";
 import { base64UrlDecode, base64UrlEncode } from "../src/base64";
 import {
   BUNDLE_CHUNK_OVERHEAD_BYTES,
-  BUNDLE_RECORD_OVERHEAD_BYTES,
   bundleChunkNonce,
   KeySet,
   type SecretMeta,
 } from "../src/encryption";
 
-// Bundle records are bound to their position in the bundle; any suffix works
-// as long as encryption and decryption agree.
-const recordAad = new TextEncoder().encode("record:0:0:8");
+// Data sealed as the one chunk of a bundle, with a fixed prefix, and opened again.
+const PREFIX = Uint8Array.from({ length: 16 }, (_, i) => i);
+const sealChunk = (ks: KeySet, text: string) =>
+  ks.encryptBundleChunk(PREFIX, 0, true, new TextEncoder().encode(text));
+const openChunk = (ks: KeySet, chunk: Uint8Array) =>
+  new TextDecoder().decode(ks.decryptBundleChunk(PREFIX, 0, true, chunk));
 
 // Password tests run the real scrypt derivation: well under a second locally,
 // but up to and past the 5 s default on a busy CI runner.
@@ -46,58 +48,6 @@ describe("KeySet", () => {
       await expect(
         KeySet.fromShareSecret(base64UrlEncode(new Uint8Array(32))),
       ).resolves.toBeInstanceOf(KeySet);
-    });
-  });
-
-  describe("encryptBundlePart/decryptBundlePart", () => {
-    it("round-trips text as bytes", async () => {
-      const ks = await KeySet.generateRandom();
-      const plaintext = "Hello, secret world!";
-      const record = ks.encryptBundlePart(new TextEncoder().encode(plaintext), recordAad);
-      expect(new TextDecoder().decode(ks.decryptBundlePart(record, recordAad))).toBe(plaintext);
-    });
-
-    it("round-trips empty data", async () => {
-      const ks = await KeySet.generateRandom();
-      const record = ks.encryptBundlePart(new Uint8Array(0), recordAad);
-      expect(ks.decryptBundlePart(record, recordAad).length).toBe(0);
-    });
-
-    it("round-trips binary data", async () => {
-      const ks = await KeySet.generateRandom();
-      const data = crypto.getRandomValues(new Uint8Array(1024));
-      const record = ks.encryptBundlePart(data, recordAad);
-      expect(ks.decryptBundlePart(record, recordAad)).toEqual(data);
-    });
-
-    it("adds exactly a nonce and an auth tag", async () => {
-      const ks = await KeySet.generateRandom();
-      const record = ks.encryptBundlePart(new Uint8Array(100), recordAad);
-      // 24 byte nonce + 100 byte data + 16 byte Poly1305 tag
-      expect(BUNDLE_RECORD_OVERHEAD_BYTES).toBe(40);
-      expect(record.length).toBe(100 + BUNDLE_RECORD_OVERHEAD_BYTES);
-    });
-
-    it("never repeats a record for the same plaintext", async () => {
-      const ks = await KeySet.generateRandom();
-      const data = new TextEncoder().encode("same plaintext");
-      expect(ks.encryptBundlePart(data, recordAad)).not.toEqual(
-        ks.encryptBundlePart(data, recordAad),
-      );
-    });
-
-    it("rejects a record bound to a different position", async () => {
-      const ks = await KeySet.generateRandom();
-      const record = ks.encryptBundlePart(new TextEncoder().encode("data"), recordAad);
-      const otherAad = new TextEncoder().encode("record:1:0:8");
-      expect(() => ks.decryptBundlePart(record, otherAad)).toThrow();
-    });
-
-    it("rejects a truncated record", async () => {
-      const ks = await KeySet.generateRandom();
-      expect(() => ks.decryptBundlePart(new Uint8Array(8), recordAad)).toThrow(
-        "invalid bundle record",
-      );
     });
   });
 
@@ -147,15 +97,12 @@ describe("KeySet", () => {
       expect(restoredEncoded.blobToken).toBe(encoded.blobToken);
     });
 
-    it("can decrypt a record encrypted by the original keyset", async () => {
+    it("can decrypt a chunk sealed by the original keyset", async () => {
       const original = await KeySet.generateRandom();
-      const plaintext = "secret message";
-      const record = original.encryptBundlePart(new TextEncoder().encode(plaintext), recordAad);
+      const chunk = sealChunk(original, "secret message");
 
       const restored = await KeySet.fromShareSecret(original.getEncoded().shareSecret);
-      expect(new TextDecoder().decode(restored.decryptBundlePart(record, recordAad))).toBe(
-        plaintext,
-      );
+      expect(openChunk(restored, chunk)).toBe("secret message");
     });
 
     it("can decrypt metadata encrypted by the original keyset", async () => {
@@ -190,13 +137,10 @@ describe("KeySet", () => {
       const shareSecret = original.getEncoded().shareSecret;
 
       const withPw = await KeySet.fromShareSecret(shareSecret, "my-password");
-      const data = new TextEncoder().encode("password-protected secret");
-      const record = withPw.encryptBundlePart(data, recordAad);
+      const chunk = sealChunk(withPw, "password-protected secret");
 
       const restored = await KeySet.fromShareSecret(shareSecret, "my-password");
-      expect(new TextDecoder().decode(restored.decryptBundlePart(record, recordAad))).toBe(
-        "password-protected secret",
-      );
+      expect(openChunk(restored, chunk)).toBe("password-protected secret");
     });
 
     it("keeps public metadata identifiers stable across different passwords", async () => {
@@ -228,10 +172,10 @@ describe("KeySet", () => {
       const shareSecret = original.getEncoded().shareSecret;
 
       const withPw = await KeySet.fromShareSecret(shareSecret, "correct-password");
-      const record = withPw.encryptBundlePart(new TextEncoder().encode("secret"), recordAad);
+      const chunk = sealChunk(withPw, "secret");
 
       const wrongPw = await KeySet.fromShareSecret(shareSecret, "wrong-password");
-      expect(() => wrongPw.decryptBundlePart(record, recordAad)).toThrow();
+      expect(() => openChunk(wrongPw, chunk)).toThrow();
     });
   });
 
@@ -244,27 +188,22 @@ describe("KeySet", () => {
       const meta = { type: "text" as const, password_protected: true };
       const encryptedMeta = await keySet.encryptMeta(meta);
       const passwordKeySet = await KeySet.fromShareSecret(shareSecret, "the-password");
-      const record = passwordKeySet.encryptBundlePart(
-        new TextEncoder().encode("secret data"),
-        recordAad,
-      );
+      const chunk = sealChunk(passwordKeySet, "secret data");
 
       // Retrieve: decrypt metadata with base key (no password needed)
       const restored = await KeySet.fromShareSecret(shareSecret);
       const decryptedMeta = await restored.decryptMeta(encryptedMeta);
       expect(decryptedMeta.password_protected).toBe(true);
       expect(restored.getEncoded().blobToken).not.toBe(passwordKeySet.getEncoded().blobToken);
-      expect(() => restored.decryptBundlePart(record, recordAad)).toThrow();
+      expect(() => openChunk(restored, chunk)).toThrow();
 
       // Decrypt data with password key
       const restoredPw = await KeySet.fromShareSecret(shareSecret, "the-password");
-      expect(new TextDecoder().decode(restoredPw.decryptBundlePart(record, recordAad))).toBe(
-        "secret data",
-      );
+      expect(openChunk(restoredPw, chunk)).toBe("secret data");
 
       // Wrong password fails
       const wrongPw = await KeySet.fromShareSecret(shareSecret, "wrong");
-      expect(() => wrongPw.decryptBundlePart(record, recordAad)).toThrow();
+      expect(() => openChunk(wrongPw, chunk)).toThrow();
     });
   });
 
@@ -278,28 +217,12 @@ describe("KeySet", () => {
       await expect(ksB.decryptMeta(envelope)).rejects.toThrow();
     });
 
-    it("rejects record decryption with a different KeySet", async () => {
+    it("rejects chunk decryption with a different KeySet", async () => {
       const ksA = await KeySet.generateRandom();
       const ksB = await KeySet.generateRandom();
 
-      const record = ksA.encryptBundlePart(new TextEncoder().encode("data"), recordAad);
-      expect(() => ksB.decryptBundlePart(record, recordAad)).toThrow();
-    });
-
-    it("rejects meta ciphertext used as a bundle record (wrong AAD purpose)", async () => {
-      const ks = await KeySet.generateRandom();
-      const envelope = await ks.encryptMeta({ type: "text" as const, password_protected: false });
-
-      // Re-frame the metadata nonce and ciphertext as a bundle record.
-      const parts = envelope.split("$");
-      const nonce = base64UrlDecode(parts[1]);
-      const ciphertext = base64UrlDecode(parts[2]);
-      const record = new Uint8Array(nonce.length + ciphertext.length);
-      record.set(nonce, 0);
-      record.set(ciphertext, nonce.length);
-
-      // Decryption fails: the AAD purpose is "bundle", not "meta".
-      expect(() => ks.decryptBundlePart(record, recordAad)).toThrow();
+      const chunk = sealChunk(ksA, "data");
+      expect(() => openChunk(ksB, chunk)).toThrow();
     });
   });
 

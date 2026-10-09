@@ -26,11 +26,10 @@ export interface SecretMeta {
 const ENVELOPE_VERSION = "v2";
 const DERIVATION_VERSION = "v1";
 const DERIVATION_PREFIX = `secretli:derivation:${DERIVATION_VERSION}`;
-const V2_NONCE_LENGTH = 24;
+/** XChaCha20-Poly1305's nonce: stored in the envelope, worked out for a chunk. */
+const NONCE_LENGTH = 24;
 const POLY1305_TAG_LENGTH = 16;
 
-/** Nonce plus Poly1305 tag stored alongside every version 2 bundle record. */
-export const BUNDLE_RECORD_OVERHEAD_BYTES = V2_NONCE_LENGTH + POLY1305_TAG_LENGTH;
 export const SHARE_SECRET_LENGTH = 32;
 /** The random prefix in front of a bundle, which every chunk's nonce begins with. */
 export const BUNDLE_PREFIX_LENGTH = 16;
@@ -120,7 +119,7 @@ export class KeySet {
    * what it holds (FORMAT.md section 4).
    */
   async encryptMeta(meta: SecretMeta): Promise<string> {
-    const nonce = crypto.getRandomValues(new Uint8Array(V2_NONCE_LENGTH));
+    const nonce = crypto.getRandomValues(new Uint8Array(NONCE_LENGTH));
     const json = new TextEncoder().encode(
       JSON.stringify({ type: meta.type, password_protected: meta.password_protected }),
     );
@@ -147,7 +146,7 @@ export class KeySet {
     const nonce = base64UrlDecode(parts[1]);
     const ciphertext = base64UrlDecode(parts[2]);
 
-    if (version !== ENVELOPE_VERSION || nonce.length !== V2_NONCE_LENGTH) {
+    if (version !== ENVELOPE_VERSION || nonce.length !== NONCE_LENGTH) {
       throw new Error("invalid metadata envelope format");
     }
 
@@ -191,37 +190,6 @@ export class KeySet {
     return bundleAad(this.publicID, STREAM_AAD_SUFFIX);
   }
 
-  /** Encrypts one version 2 bundle record with a fresh random nonce; the nonce is stored in the record. */
-  encryptBundlePart(data: Uint8Array, aadSuffix: Uint8Array): Uint8Array {
-    const nonce = crypto.getRandomValues(new Uint8Array(V2_NONCE_LENGTH));
-    return this.encryptBundlePartWithNonce(data, aadSuffix, nonce);
-  }
-
-  private encryptBundlePartWithNonce(
-    data: Uint8Array,
-    aadSuffix: Uint8Array,
-    nonce: Uint8Array,
-  ): Uint8Array {
-    const aad = bundleAad(this.publicID, aadSuffix);
-    const cipher = xchacha20poly1305(this.blobKey, nonce, aad);
-    const ciphertext = cipher.encrypt(data);
-    const output = new Uint8Array(nonce.length + ciphertext.length);
-    output.set(nonce, 0);
-    output.set(ciphertext, nonce.length);
-    return output;
-  }
-
-  decryptBundlePart(record: Uint8Array, aadSuffix: Uint8Array): Uint8Array {
-    if (record.length < V2_NONCE_LENGTH + POLY1305_TAG_LENGTH) {
-      throw new Error("invalid bundle record");
-    }
-    const nonce = record.slice(0, V2_NONCE_LENGTH);
-    const ciphertext = record.slice(V2_NONCE_LENGTH);
-    const aad = bundleAad(this.publicID, aadSuffix);
-    const cipher = xchacha20poly1305(this.blobKey, nonce, aad);
-    return cipher.decrypt(ciphertext);
-  }
-
   getEncoded(): EncodedKeySet {
     return {
       shareSecret: base64UrlEncode(this.shareSecret),
@@ -243,14 +211,14 @@ export function bundleChunkNonce(prefix: Uint8Array, index: number, last: boolea
   if (!Number.isSafeInteger(index) || index < 0) {
     throw new Error("chunk index out of range");
   }
-  const nonce = new Uint8Array(V2_NONCE_LENGTH);
+  const nonce = new Uint8Array(NONCE_LENGTH);
   nonce.set(prefix, 0);
   let rest = index;
-  for (let i = V2_NONCE_LENGTH - 2; i >= BUNDLE_PREFIX_LENGTH; i--) {
+  for (let i = NONCE_LENGTH - 2; i >= BUNDLE_PREFIX_LENGTH; i--) {
     nonce[i] = rest % 256;
     rest = Math.floor(rest / 256);
   }
-  nonce[V2_NONCE_LENGTH - 1] = last ? 1 : 0;
+  nonce[NONCE_LENGTH - 1] = last ? 1 : 0;
   return nonce;
 }
 

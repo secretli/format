@@ -1,7 +1,6 @@
 package bundle
 
 import (
-	"bytes"
 	"context"
 	"encoding/binary"
 	"encoding/json"
@@ -15,20 +14,17 @@ import (
 	"github.com/secretli/format/keys"
 )
 
-// Bundle is an opened bundle of either version: its files, and what reading
-// them takes.
+// RangeFetcher reads the bundle bytes from start to end, both inclusive.
+type RangeFetcher func(ctx context.Context, start, end int64) ([]byte, error)
+
+// Bundle is an opened bundle: its files, and what reading them takes.
 type Bundle struct {
-	// Version is 3, or 2 for a bundle from before the stream.
-	Version int
 	// Files lists the files in bundle order.
 	Files []Entry
 
 	fetch RangeFetcher
 	ks    *keys.KeySet
 	size  int64
-
-	// manifest is a version 2 bundle's.
-	manifest *Manifest
 
 	prefix []byte
 	chunks int64
@@ -40,82 +36,23 @@ type Bundle struct {
 	headChunks int64
 }
 
-// Open reads a bundle's file list, telling the versions apart by the last 64
-// bytes (FORMAT.md section 7): a bundle of at most SmallBundleBytes is
-// fetched whole, in one request that serves everything after it. Of a larger
-// one, Open fetches the last 64 bytes, then for version 3 the first
+// Open reads a bundle's file list (FORMAT.md sections 5 and 6). A bundle of
+// at most SmallBundleBytes is fetched whole, in one request that serves
+// everything after it. Of a larger one, Open fetches the first
 // SmallBundleBytes and, if the list goes on, the chunks that hold the rest
-// (section 8). The list is checked before Open returns.
+// (section 8). The list is checked before Open returns. A size that cannot
+// be a prefix and chunks is refused before anything is fetched.
 func Open(ctx context.Context, fetch RangeFetcher, ks *keys.KeySet, size int64) (*Bundle, error) {
-	if size <= 0 || (size < FooterLength && !validStreamSize(size)) {
-		return nil, ErrInvalidSize
-	}
-	var whole []byte
-	if size <= SmallBundleBytes {
-		var err error
-		if whole, err = fetchRange(ctx, fetch, 0, size); err != nil {
-			return nil, err
-		}
-		fetch = memoryFetcher(whole)
-	}
-	if size >= FooterLength {
-		trailer := whole[max(0, len(whole)-FooterLength):]
-		if whole == nil {
-			var err error
-			if trailer, err = fetchRange(ctx, fetch, size-FooterLength, size); err != nil {
-				return nil, err
-			}
-		}
-		if bytes.HasPrefix(trailer, magic) {
-			manifest, err := readManifest(ctx, fetch, ks, size, trailer)
-			if err != nil {
-				return nil, err
-			}
-			b := &Bundle{Version: 2, fetch: fetch, ks: ks, size: size, manifest: manifest}
-			for _, f := range manifest.Files {
-				b.Files = append(b.Files, Entry{Index: f.Index, Name: f.Name, Type: f.Type, Size: f.Size})
-			}
-			return b, nil
-		}
-	}
-	return openStream(ctx, fetch, ks, size, whole)
-}
-
-// Manifest is a version 2 bundle's manifest, and nil for version 3.
-func (b *Bundle) Manifest() *Manifest {
-	return b.manifest
-}
-
-// TotalSize is the plaintext size of every file together.
-func (b *Bundle) TotalSize() int64 {
-	var total int64
-	for _, f := range b.Files {
-		total += f.Size
-	}
-	return total
-}
-
-// validStreamSize reports whether size can be a prefix and chunks whose last
-// one holds plaintext.
-func validStreamSize(size int64) bool {
-	if size <= PrefixLength+ChunkOverhead {
-		return false
-	}
-	chunks := (size - PrefixLength + SealedChunkSize - 1) / SealedChunkSize
-	return size-PrefixLength-SealedChunkSize*(chunks-1) > ChunkOverhead
-}
-
-func openStream(ctx context.Context, fetch RangeFetcher, ks *keys.KeySet, size int64, whole []byte) (*Bundle, error) {
 	if !validStreamSize(size) {
 		return nil, ErrInvalidSize
 	}
-	b := &Bundle{Version: 3, fetch: fetch, ks: ks, size: size, head: whole}
+	b := &Bundle{fetch: fetch, ks: ks, size: size}
 	b.chunks = (size - PrefixLength + SealedChunkSize - 1) / SealedChunkSize
-	if b.head == nil {
-		var err error
-		if b.head, err = fetchRange(ctx, fetch, 0, SmallBundleBytes); err != nil {
-			return nil, err
-		}
+	// A small bundle is fetched whole: then every chunk is in the head, and
+	// reading files makes no further request.
+	var err error
+	if b.head, err = fetchRange(ctx, fetch, 0, min(size, SmallBundleBytes)); err != nil {
+		return nil, err
 	}
 	b.prefix = b.head[:PrefixLength]
 	b.headChunks = b.completeChunks(int64(len(b.head)))
@@ -157,6 +94,25 @@ func openStream(ctx context.Context, fetch RangeFetcher, ks *keys.KeySet, size i
 		return nil, err
 	}
 	return b, nil
+}
+
+// TotalSize is the plaintext size of every file together.
+func (b *Bundle) TotalSize() int64 {
+	var total int64
+	for _, f := range b.Files {
+		total += f.Size
+	}
+	return total
+}
+
+// validStreamSize reports whether size can be a prefix and chunks whose last
+// one holds plaintext.
+func validStreamSize(size int64) bool {
+	if size <= PrefixLength+ChunkOverhead {
+		return false
+	}
+	chunks := (size - PrefixLength + SealedChunkSize - 1) / SealedChunkSize
+	return size-PrefixLength-SealedChunkSize*(chunks-1) > ChunkOverhead
 }
 
 // completeChunks is how many chunks the first n bytes of the bundle hold
@@ -267,10 +223,7 @@ func (b *Bundle) Decrypt(ctx context.Context, indices []int, open func(Entry) (i
 		return err
 	}
 	var written int64
-	var chunks *chunkReader
-	if b.Version == 3 {
-		chunks = b.newChunkReader(ctx, selected)
-	}
+	chunks := b.newChunkReader(ctx, selected)
 	for _, i := range selected {
 		file := b.Files[i]
 		w, err := open(file)
@@ -284,12 +237,7 @@ func (b *Bundle) Decrypt(ctx context.Context, indices []int, open func(Entry) (i
 				progress(written)
 			}
 		}
-		if b.Version == 2 {
-			err = DecryptFile(ctx, b.fetch, b.ks, b.manifest.Files[i], w, track)
-		} else {
-			err = chunks.copyFile(w, b.starts[i], file.Size, track)
-		}
-		if err != nil {
+		if err := chunks.copyFile(w, b.starts[i], file.Size, track); err != nil {
 			_ = w.Close()
 			return err
 		}
@@ -458,14 +406,4 @@ func fetchRange(ctx context.Context, fetch RangeFetcher, start, end int64) ([]by
 		return nil, ErrRangeMismatch
 	}
 	return data, nil
-}
-
-// memoryFetcher serves ranges of a bundle held whole.
-func memoryFetcher(whole []byte) RangeFetcher {
-	return func(_ context.Context, start, end int64) ([]byte, error) {
-		if start < 0 || end >= int64(len(whole)) || end < start {
-			return nil, ErrRangeMismatch
-		}
-		return whole[start : end+1], nil
-	}
 }

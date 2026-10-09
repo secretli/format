@@ -40,8 +40,6 @@ b, _ := bundle.Open(ctx, fetch, blobKeys, int64(len(data))) // b.Files: name, ty
 _ = b.DecryptFile(ctx, 0, os.Stdout, nil)                    // b.Decrypt reads several in one pass
 ```
 
-`bundle.Open` also reads bundles of version 2, which `bundle.NewPlan` and `bundle.Encrypt` still write while clients move to version 3.
-
 Handing a link over with a code runs over a relay you implement against the server's transfer API; `transfer` does the cryptography and the order of the legs:
 
 ```go

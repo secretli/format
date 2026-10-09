@@ -29,12 +29,7 @@ import (
 // output; FORMAT.md section 10 describes the vector files.
 // testdata/ts-vectors.json is written by the TypeScript tests and read here;
 // testdata/go-vectors.json is written here and read there. Their cases are
-// version 3 bundles with a fixed prefix, which each side must reproduce byte
-// for byte.
-//
-// The *-v2.json and *-unpadded.json files hold version 2 bundles from before
-// version 3 and from before writers padded. They are never regenerated, so
-// that readers keep reading such bundles until version 2 goes.
+// bundles with a fixed prefix, which each side must reproduce byte for byte.
 //
 // Regenerate the committed Go vectors with
 //
@@ -70,15 +65,11 @@ type vectorCase struct {
 		BlobToken         string `json:"blob_token"`
 		PasswordBlobToken string `json:"password_blob_token"`
 	} `json:"derived"`
-	// Meta of a version 2 case also has bundle_name, which keys.Meta, like
-	// every reader, ignores.
 	Meta          keys.Meta    `json:"meta"`
 	EncryptedMeta string       `json:"encrypted_meta"`
 	Files         []vectorFile `json:"files"`
-	// Prefix is a version 3 bundle's; version 2 cases have none, but a
-	// bundle name.
-	Prefix       string `json:"prefix,omitempty"`
-	BundleName   string `json:"bundle_name,omitempty"`
+	// Prefix is the bundle's, which a writer given it reproduces exactly.
+	Prefix       string `json:"prefix"`
 	BundleBase64 string `json:"bundle_base64"`
 }
 
@@ -145,21 +136,15 @@ func (f vectorFile) content(t *testing.T) []byte {
 }
 
 func TestReadsVectors(t *testing.T) {
-	current := []string{filepath.Join("testdata", "ts-vectors.json")}
+	files := []string{filepath.Join("testdata", "ts-vectors.json")}
 	if *vectorsDir != "" {
 		more, err := filepath.Glob(filepath.Join(*vectorsDir, "*.json"))
 		if err != nil {
 			t.Fatal(err)
 		}
-		current = append(current, more...)
+		files = append(files, more...)
 	}
-	frozen := map[string]bool{
-		filepath.Join("testdata", "ts-vectors-v2.json"):       true,
-		filepath.Join("testdata", "ts-vectors-unpadded.json"): false,
-	}
-	files := append(current, filepath.Join("testdata", "ts-vectors-v2.json"), filepath.Join("testdata", "ts-vectors-unpadded.json"))
 	for _, path := range files {
-		padded, isFrozen := frozen[path]
 		t.Run(filepath.Base(path), func(t *testing.T) {
 			raw, err := os.ReadFile(path)
 			if err != nil {
@@ -173,16 +158,7 @@ func TestReadsVectors(t *testing.T) {
 				t.Fatalf("%d cases and %d transfer cases; both are required", len(v.Cases), len(v.Transfer))
 			}
 			for _, c := range v.Cases {
-				t.Run(c.Name, func(t *testing.T) {
-					switch {
-					case !isFrozen:
-						checkCase(t, c)
-					case padded:
-						checkV2Case(t, c, true)
-					default:
-						checkV2Case(t, c, false)
-					}
-				})
+				t.Run(c.Name, func(t *testing.T) { checkCase(t, c) })
 			}
 			for _, c := range v.Transfer {
 				t.Run("transfer/"+c.Name, func(t *testing.T) { checkTransferCase(t, c) })
@@ -193,7 +169,7 @@ func TestReadsVectors(t *testing.T) {
 
 // openCase checks the derived values and the envelope, then opens the
 // bundle and expects the case's files in it.
-func openCase(t *testing.T, c vectorCase, version int) (*keys.KeySet, []byte, []bundle.Source) {
+func openCase(t *testing.T, c vectorCase) (*keys.KeySet, []byte, []bundle.Source) {
 	t.Helper()
 	base, err := keys.FromShareSecret(c.ShareSecret, "")
 	if err != nil {
@@ -229,8 +205,8 @@ func openCase(t *testing.T, c vectorCase, version int) (*keys.KeySet, []byte, []
 	if err != nil {
 		t.Fatalf("open bundle: %v", err)
 	}
-	if b.Version != version || len(b.Files) != len(c.Files) {
-		t.Fatalf("version %d with %d files, want version %d with %d", b.Version, len(b.Files), version, len(c.Files))
+	if len(b.Files) != len(c.Files) {
+		t.Fatalf("%d files, want %d", len(b.Files), len(c.Files))
 	}
 	sources := make([]bundle.Source, len(c.Files))
 	got := make([][]byte, len(c.Files))
@@ -264,12 +240,11 @@ func (c *collect) Close() error {
 	return nil
 }
 
-// checkCase reads a version 3 case, then writes the same files with the
-// case's prefix and expects exactly the same bundle, and checks that the
+// checkCase reads a case, then writes the same files with the case's prefix and expects exactly the same bundle, and checks that the
 // envelope is padded as FORMAT.md section 4 says.
 func checkCase(t *testing.T, c vectorCase) {
 	t.Helper()
-	blob, data, sources := openCase(t, c, 3)
+	blob, data, sources := openCase(t, c)
 	prefix, err := base64.RawURLEncoding.DecodeString(c.Prefix)
 	if err != nil || len(prefix) != bundle.PrefixLength {
 		t.Fatalf("prefix %q: %v", c.Prefix, err)
@@ -290,24 +265,6 @@ func checkCase(t *testing.T, c vectorCase) {
 		t.Errorf("this side writes %d bytes, the other side wrote %d, and not the same", len(written), len(data))
 	}
 	checkEnvelopePadding(t, c)
-}
-
-// checkV2Case reads a frozen version 2 case. For a padded one it also plans
-// the same files itself and expects the other side's bundle to have exactly
-// that size, so both version 2 writers pad alike.
-func checkV2Case(t *testing.T, c vectorCase, padded bool) {
-	t.Helper()
-	_, data, sources := openCase(t, c, 2)
-	if !padded {
-		return
-	}
-	plan, err := bundle.NewPlan(sources, c.BundleName)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if int64(len(data)) != plan.TotalSize {
-		t.Errorf("bundle is %d bytes, this side pads the same files to %d", len(data), plan.TotalSize)
-	}
 }
 
 // checkEnvelopePadding opens the envelope with keys derived here, apart from

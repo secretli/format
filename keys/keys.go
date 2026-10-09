@@ -1,7 +1,6 @@
 // Package keys derives every key and token of a secret from its share secret
-// and seals and opens the ciphertext the format has: the metadata envelope,
-// the chunks of a bundle, and the records of a version 2 bundle. It mirrors
-// ts/src/encryption.ts byte for byte; the vectors test in the parent
+// and seals and opens the ciphertext the format has: the metadata envelope
+// and the chunks of a bundle. It mirrors ts/src/encryption.ts byte for byte; the vectors test in the parent
 // directory checks the two implementations against each other.
 package keys
 
@@ -28,12 +27,9 @@ const (
 	// TokenLength is the size of the deletion token, the one token that is
 	// random rather than derived.
 	TokenLength = 32
-	// NonceLength is the XChaCha20-Poly1305 nonce stored in front of every
-	// ciphertext.
+	// NonceLength is the XChaCha20-Poly1305 nonce: stored in the metadata
+	// envelope, and made of the prefix, index and last flag for a chunk.
 	NonceLength = chacha20poly1305.NonceSizeX
-	// RecordOverhead is what a version 2 bundle record adds to its plaintext:
-	// the nonce and the Poly1305 tag.
-	RecordOverhead = NonceLength + chacha20poly1305.Overhead
 	// ChunkPrefixLength is the random prefix in front of a bundle, which every
 	// chunk's nonce begins with.
 	ChunkPrefixLength = 16
@@ -253,7 +249,7 @@ func (k *KeySet) EncryptChunk(prefix []byte, index int64, last bool, plaintext [
 	if err != nil {
 		return nil, fmt.Errorf("chunk cipher: %w", err)
 	}
-	return aead.Seal(make([]byte, 0, len(plaintext)+aead.Overhead()), nonce, plaintext, k.recordAAD([]byte(streamAADSuffix))), nil
+	return aead.Seal(make([]byte, 0, len(plaintext)+aead.Overhead()), nonce, plaintext, k.streamAAD()), nil
 }
 
 // DecryptChunk opens a chunk made by EncryptChunk for the same place.
@@ -269,7 +265,7 @@ func (k *KeySet) DecryptChunk(prefix []byte, index int64, last bool, chunk []byt
 	if err != nil {
 		return nil, fmt.Errorf("chunk cipher: %w", err)
 	}
-	plaintext, err := aead.Open(make([]byte, 0, len(chunk)-aead.Overhead()), nonce, chunk, k.recordAAD([]byte(streamAADSuffix)))
+	plaintext, err := aead.Open(make([]byte, 0, len(chunk)-aead.Overhead()), nonce, chunk, k.streamAAD())
 	if err != nil {
 		return nil, ErrDecrypt
 	}
@@ -295,47 +291,16 @@ func chunkNonce(prefix []byte, index int64, last bool) ([]byte, error) {
 	return nonce, nil
 }
 
-// EncryptRecord seals one version 2 bundle record with a fresh nonce, which
-// is stored in front of the ciphertext. The suffix binds the record to its
-// place in the bundle.
-func (k *KeySet) EncryptRecord(plaintext, aadSuffix []byte) ([]byte, error) {
-	nonce, err := newNonce()
-	if err != nil {
-		return nil, err
-	}
-	aead, err := chacha20poly1305.NewX(k.blobKey)
-	if err != nil {
-		return nil, fmt.Errorf("record cipher: %w", err)
-	}
-	out := make([]byte, NonceLength, NonceLength+len(plaintext)+aead.Overhead())
-	copy(out, nonce)
-	return aead.Seal(out, nonce, plaintext, k.recordAAD(aadSuffix)), nil
-}
-
-// DecryptRecord opens a record made by EncryptRecord for the same place.
-func (k *KeySet) DecryptRecord(record, aadSuffix []byte) ([]byte, error) {
-	if len(record) < RecordOverhead {
-		return nil, ErrDecrypt
-	}
-	aead, err := chacha20poly1305.NewX(k.blobKey)
-	if err != nil {
-		return nil, fmt.Errorf("record cipher: %w", err)
-	}
-	plaintext, err := aead.Open(nil, record[:NonceLength], record[NonceLength:], k.recordAAD(aadSuffix))
-	if err != nil {
-		return nil, ErrDecrypt
-	}
-	return plaintext, nil
-}
-
 func (k *KeySet) metaAAD() []byte {
 	return append(append([]byte{}, k.publicID...), "meta"...)
 }
 
-func (k *KeySet) recordAAD(suffix []byte) []byte {
+// streamAAD is public_id || "bundle" || 0x00 || "stream:v3", the AAD of
+// every chunk (FORMAT.md section 5).
+func (k *KeySet) streamAAD() []byte {
 	aad := append(append([]byte{}, k.publicID...), "bundle"...)
 	aad = append(aad, 0)
-	return append(aad, suffix...)
+	return append(aad, streamAADSuffix...)
 }
 
 func build(secret, blobMaterial, deletion []byte) (*KeySet, error) {
