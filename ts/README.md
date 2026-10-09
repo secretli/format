@@ -1,6 +1,6 @@
 # @secretli/format
 
-The encrypted format behind [Secretli](https://secretli.app), in TypeScript: deriving keys and tokens from a share secret, the metadata envelope, the bundle of sealed 4 MiB records with its manifest and footer, share links, and handing a link to another device with a short code.
+The encrypted format behind [Secretli](https://secretli.app), in TypeScript: deriving keys and tokens from a share secret, the padded metadata envelope, the bundle (one stream sealed in 64 KiB chunks), share links, and handing a link to another device with a short code.
 
 The package is pure. It talks to no server and keeps no state; encryption and decryption happen wherever the key is. Its only dependencies are [`@noble/ciphers`](https://github.com/paulmillr/noble-ciphers), [`@noble/curves`](https://github.com/paulmillr/noble-curves) and [`@noble/hashes`](https://github.com/paulmillr/noble-hashes).
 
@@ -19,32 +19,32 @@ It ships as ES modules with type declarations, for browsers and Node 20 or later
 ## Use
 
 ```ts
-import {
-  KeySet,
-  createEncryptedBundle,
-  decryptBundleFiles,
-  parseShareLink,
-  readBundleManifest,
-} from "@secretli/format";
+import { KeySet, cutIntoParts, encryptStream, openBundle, planStream } from "@secretli/format";
 
 // Making a secret: fresh keys, the blob keys optionally derived with a password.
 const keys = await KeySet.generateRandom();
 const blobKeys = await KeySet.fromShareSecret(keys.getEncoded().shareSecret, "optional password");
-const { blob, manifest } = await createEncryptedBundle([new File(["notes"], "notes.txt")], blobKeys);
-const envelope = await keys.encryptMeta({
-  type: "bundle",
-  password_protected: true,
-  bundle_name: manifest.bundleName,
-});
+const envelope = await keys.encryptMeta({ type: "bundle", password_protected: true });
+
+// The plan needs only names, types and sizes: its totalSize is the exact size of the bundle,
+// padding included, to check against the upload limit and declare to the server.
+const files = [new File(["notes"], "notes.txt", { type: "text/plain" })];
+const plan = planStream(files);
+for await (const part of cutIntoParts(encryptStream(plan, files, blobKeys), 32 * 1024 * 1024)) {
+  // … upload the part at its offset …
+}
 
 // Opening one: the share secret from the link, the password if any, and byte ranges of the bundle.
-const bytes = new Uint8Array(await blob.arrayBuffer());
-const range = async (start: number, end: number) => bytes.slice(start, end + 1);
-const read = await readBundleManifest(range, blobKeys, bytes.length);
-const files = await decryptBundleFiles(read.manifest.files, blobKeys, range);
+const opened = await openBundle(fetchRange, blobKeys, size);
+for (const file of opened.files) console.log(file.index, file.name, file.type, file.size);
+const decrypted = await opened.decryptFiles([0, 2], {
+  onProgress: ({ decryptedBytes, totalBytes }) => console.log(decryptedBytes, totalBytes),
+});
 ```
 
-`createEncryptedBundle` builds the whole bundle in memory, which suits small secrets. For large files, encrypt record by record from `planBundle` and stream the records to wherever they go. The plan's manifest carries the padding that keeps the bundle's size from saying much (FORMAT.md section 6), so encrypting `JSON.stringify(plan.manifest)` after the records and adding the footer gives exactly `plan.totalSize` bytes. Uploading and retrieval sessions belong to the Secretli server's API, not to this package.
+`encryptStream` yields the 16-byte prefix and then one sealed 64 KiB chunk after another, reading each file in 4 MiB slices; `cutIntoParts` turns that into parts of exactly the upload part size, the last one shorter. `plannedBundleSize(files)` is the plan's size alone. `createStreamBundle` builds a whole bundle in memory, which suits tests and small secrets.
+
+`openBundle` fetches a small bundle in one request, and of a larger one only what it needs: the last 64 bytes to tell the versions apart, the first MiB with the file list, then the chunks of the files asked for, neighbouring ones in one request. `decryptFiles` returns one `Blob` per file, extended as chunks arrive, so a download of a gigabyte never sits in the JavaScript heap. It reads bundles of version 2 too; `planBundle`, `createEncryptedBundle`, `readBundleManifest` and `decryptBundleFiles` still write and read them while clients move to version 3. Uploading and retrieval sessions belong to the Secretli server's API, not to this package.
 
 A link goes to another device with a code such as `7-acid-rocket`:
 

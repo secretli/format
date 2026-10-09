@@ -1,14 +1,12 @@
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { xchacha20poly1305 } from "@noble/ciphers/chacha.js";
+import { hkdf } from "@noble/hashes/hkdf.js";
+import { sha512 } from "@noble/hashes/sha2.js";
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
-import { base64UrlEncode } from "../src/base64";
-import {
-  DEFAULT_BUNDLE_CHUNK_SIZE,
-  decryptBundleFiles,
-  planBundle,
-  readBundleManifest,
-} from "../src/bundle";
+import { base64UrlDecode, base64UrlEncode } from "../src/base64";
+import { planBundle } from "../src/bundle";
 import {
   calculateGenerator,
   cpaceIsk,
@@ -16,8 +14,10 @@ import {
   scalarFromBytesLE,
   scalarMultVfy,
 } from "../src/cpace";
-import { createEncryptedBundle } from "../src/encryptBundle";
 import { KeySet, type SecretMeta } from "../src/encryption";
+import { openBundle } from "../src/openBundle";
+import { padme } from "../src/padme";
+import { BUNDLE_PIECE_SIZE, encryptStream, planStream } from "../src/stream";
 import {
   channelIdentifier,
   confirmationTag,
@@ -30,9 +30,12 @@ import { parseCode, TRANSFER_WORDS, transferPassword } from "../src/transferWord
 /**
  * The Go implementation (keys, bundle, transfer) and this one must read each other's
  * output; FORMAT.md section 10 describes the vector files.
- * This side writes ts-vectors.json and reads go-vectors.json. The two
- * *-unpadded.json files hold bundles from before writers padded them; they are
- * never regenerated, so that readers keep reading such bundles.
+ * This side writes ts-vectors.json and reads go-vectors.json. Their cases are version 3
+ * bundles with a fixed prefix, which each side must reproduce byte for byte.
+ *
+ * The *-v2.json and *-unpadded.json files hold version 2 bundles from before version 3 and
+ * from before writers padded. They are never regenerated, so that readers keep reading
+ * such bundles until version 2 goes.
  *
  * Regenerate the committed TypeScript vectors with
  *
@@ -65,10 +68,13 @@ interface VectorCase {
     blob_token: string;
     password_blob_token: string;
   };
+  /** Version 2 cases' meta also has bundle_name, which readers ignore. */
   meta: SecretMeta;
   encrypted_meta: string;
-  bundle_name: string;
   files: VectorFile[];
+  /** A version 3 bundle's prefix; version 2 cases have none, but a bundle name. */
+  prefix?: string;
+  bundle_name?: string;
   /** The whole encrypted bundle, sealed with this case's blob keys. */
   bundle_base64: string;
 }
@@ -140,6 +146,7 @@ function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
   return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
 }
 
+/** Encrypts the files with a share secret and a prefix fixed by the seed byte. */
 async function makeCase(
   name: string,
   secretByte: number,
@@ -149,19 +156,13 @@ async function makeCase(
 ): Promise<VectorCase> {
   const secret = new Uint8Array(32);
   for (let i = 0; i < secret.length; i++) secret[i] = (secretByte + i) & 0xff;
+  const prefix = Uint8Array.from({ length: 16 }, (_, i) => ((secretByte ^ 0x5a) + 3 * i) & 0xff);
   const shareSecret = base64UrlEncode(secret);
   const base = await KeySet.fromShareSecret(shareSecret);
   const blob = password ? await KeySet.fromShareSecret(shareSecret, password) : base;
 
-  const fileObjects = files.map(
-    (f) => new File([toArrayBuffer(contentOf(f))], f.name, { type: f.type }),
-  );
-  const { blob: bundle, manifest } = await createEncryptedBundle(fileObjects, blob);
-  const meta: SecretMeta = {
-    type: metaType,
-    password_protected: password !== "",
-    bundle_name: manifest.bundleName,
-  };
+  const bundle = await writeBundle(files, blob, prefix);
+  const meta: SecretMeta = { type: metaType, password_protected: password !== "" };
   const encoded = base.getEncoded();
   return {
     name,
@@ -175,18 +176,50 @@ async function makeCase(
     },
     meta,
     encrypted_meta: await base.encryptMeta(meta),
-    bundle_name: manifest.bundleName,
     files,
-    bundle_base64: toBase64(new Uint8Array(await bundle.arrayBuffer())),
+    prefix: base64UrlEncode(prefix),
+    bundle_base64: toBase64(bundle),
   };
 }
 
 /**
- * Reads the case's bundle. For a padded one it also plans the same files
- * itself and expects the other side's bundle to have exactly that size, so
- * both writers pad alike.
+ * Writes the files as a bundle with this prefix. It plans from the names and types as they
+ * are: a File would lower-case its type, and drop one with characters outside printable
+ * ASCII, as browsers do.
  */
-async function checkCase(c: VectorCase, padded: boolean) {
+async function writeBundle(
+  files: VectorFile[],
+  keySet: KeySet,
+  prefix: Uint8Array,
+): Promise<Uint8Array> {
+  const contents = files.map(contentOf);
+  const plan = planStream(
+    files.map((f, i) => ({ name: f.name, type: f.type, size: contents[i].length })),
+  );
+  const parts: Uint8Array[] = [];
+  const blobs = contents.map((c) => new Blob([toArrayBuffer(c)]));
+  for await (const part of encryptStream(plan, blobs, keySet, { prefix })) {
+    parts.push(part);
+  }
+  const out = new Uint8Array(plan.totalSize);
+  let offset = 0;
+  for (const part of parts) {
+    out.set(part, offset);
+    offset += part.length;
+  }
+  expect(offset).toBe(plan.totalSize);
+  return out;
+}
+
+type Kind = "current" | "v2" | "v2-unpadded";
+
+/**
+ * Reads the case's bundle and expects its files. A current case is then written again with
+ * its prefix and must come out byte for byte the same, and its envelope must be padded as
+ * FORMAT.md section 4 says. Of a padded version 2 case this side plans the same files and
+ * expects the same size, so both version 2 writers pad alike.
+ */
+async function checkCase(c: VectorCase, kind: Kind) {
   const base = await KeySet.fromShareSecret(c.share_secret);
   const encoded = base.getEncoded();
   expect(encoded.publicID).toBe(c.derived.public_id);
@@ -195,14 +228,18 @@ async function checkCase(c: VectorCase, padded: boolean) {
   const blob = c.password ? await KeySet.fromShareSecret(c.share_secret, c.password) : base;
   expect(blob.getEncoded().blobToken).toBe(c.derived.password_blob_token);
 
-  await expect(base.decryptMeta(c.encrypted_meta)).resolves.toEqual(c.meta);
+  const meta = await base.decryptMeta(c.encrypted_meta);
+  expect({ type: meta.type, password_protected: meta.password_protected }).toEqual({
+    type: c.meta.type,
+    password_protected: c.meta.password_protected,
+  });
 
   const bytes = fromBase64(c.bundle_base64);
   const fetchRange = async (start: number, end: number) => bytes.slice(start, end + 1);
-  const { manifest } = await readBundleManifest(fetchRange, blob, bytes.length);
-  expect(manifest.bundleName).toBe(c.bundle_name);
-  expect(manifest.files.map((f) => [f.name, f.type])).toEqual(c.files.map((f) => [f.name, f.type]));
-  const decrypted = await decryptBundleFiles(manifest.files, blob, fetchRange);
+  const opened = await openBundle(fetchRange, blob, bytes.length);
+  expect(opened.version).toBe(kind === "current" ? 3 : 2);
+  expect(opened.files.map((f) => [f.name, f.type])).toEqual(c.files.map((f) => [f.name, f.type]));
+  const decrypted = await opened.decryptFiles();
   for (const [i, { blob: content }] of decrypted.entries()) {
     const got = new Uint8Array(await content.arrayBuffer());
     const want = contentOf(c.files[i]);
@@ -210,13 +247,40 @@ async function checkCase(c: VectorCase, padded: boolean) {
     expect(Buffer.from(got).equals(Buffer.from(want))).toBe(true);
   }
 
-  if (padded) {
+  if (kind === "v2") {
     // Planning reads only names, types and sizes.
     const sized = c.files.map(
       (f) => new File([new Uint8Array(contentOf(f).length)], f.name, { type: f.type }),
     );
     expect(bytes.length).toBe(planBundle(sized, c.bundle_name).totalSize);
   }
+  if (kind !== "current") return;
+
+  const prefix = base64UrlDecode(c.prefix ?? "");
+  expect(prefix.length).toBe(16);
+  const written = await writeBundle(c.files, blob, prefix);
+  expect(written.length).toBe(bytes.length);
+  expect(Buffer.from(written).equals(Buffer.from(bytes))).toBe(true);
+  checkEnvelopePadding(c);
+}
+
+/** Opens the envelope with keys derived here, apart from KeySet, and checks its padding. */
+function checkEnvelopePadding(c: VectorCase) {
+  const secret = base64UrlDecode(c.share_secret);
+  const label = (name: string) => new TextEncoder().encode(`secretli:derivation:v1:${name}`);
+  const metaKey = hkdf(sha512, secret, undefined, label("meta_key"), 32);
+  const publicID = hkdf(sha512, secret, undefined, label("public_id"), 16);
+  const [, nonce, ciphertext] = c.encrypted_meta.split("$");
+  const aad = new Uint8Array([...publicID, ...new TextEncoder().encode("meta")]);
+  const plaintext = xchacha20poly1305(metaKey, base64UrlDecode(nonce), aad).decrypt(
+    base64UrlDecode(ciphertext),
+  );
+  const json = new TextDecoder().decode(plaintext).replace(/ +$/, "");
+  const n = new TextEncoder().encode(json).length;
+  const padded = n > 6101 ? n : Math.min(6101, Math.max(512, padme(n)));
+  expect(plaintext.length).toBe(padded);
+  expect(JSON.parse(json)).toEqual(c.meta);
+  expect(c.encrypted_meta.length).toBe(740);
 }
 
 const utf8 = (s: string) => new TextEncoder().encode(s);
@@ -301,37 +365,74 @@ describe("cross-implementation vectors", () => {
 
     const text = toBase64(new TextEncoder().encode("hello from typescript\n"));
     const bytes = toBase64(new Uint8Array(Array.from({ length: 256 }, (_, i) => i)));
+    const octet = "application/octet-stream";
     const cases = [
       await makeCase("text", 0x01, "", "text", [
         { name: "secret.txt", type: "text/plain", content_base64: text },
       ]),
       await makeCase("files-password", 0x21, "correct horse battery staple", "bundle", [
         { name: "hello.txt", type: "text/plain", content_base64: text },
-        { name: "empty.bin", type: "application/octet-stream", content_base64: "" },
-        { name: "bytes.bin", type: "application/octet-stream", content_base64: bytes },
+        { name: "empty.bin", type: octet, content_base64: "" },
+        { name: "bytes.bin", type: octet, content_base64: bytes },
       ]),
-      // Above the 4,096-byte minimum, so Padmé rounds it: to 10,752 bytes.
+      // Above the 4,096-byte minimum, so Padmé rounds the stream: to 10,240 bytes.
       await makeCase("rounded", 0x31, "", "bundle", [
+        { name: "ten-thousand.bin", type: octet, generated: { seed: 18, length: 10000 } },
+      ]),
+      // Names that JSON.stringify and Go's encoding/json escape differently, a lone
+      // surrogate, empty files, and a file across the first chunk boundary.
+      await makeCase("names", 0x51, "", "bundle", [
+        { name: "<a & b>.txt", type: "text/plain", content_base64: "" },
         {
-          name: "ten-thousand.bin",
-          type: "application/octet-stream",
-          generated: { seed: 18, length: 10000 },
+          name: 'say "hi".txt',
+          type: 'text/plain; charset="utf-8"',
+          generated: { seed: 31, length: 30000 },
         },
+        { name: "back\\slash/and/slash.txt", type: octet, content_base64: "" },
+        {
+          name: "tab\there\b\f\n\r\u0007\u001f\u007f.bin",
+          type: "application/x-\u0000",
+          generated: { seed: 32, length: 40000 },
+        },
+        {
+          name: "Grüße    📄.txt",
+          type: "text/plain",
+          content_base64: toBase64(new TextEncoder().encode("fünf")),
+        },
+        { name: "lone \ud800 surrogate.txt", type: "text/plain", content_base64: "" },
       ]),
     ];
     if (process.env.VECTORS_BIG) {
-      const chunk = DEFAULT_BUNDLE_CHUNK_SIZE;
-      const octet = "application/octet-stream";
       cases.push(
         await makeCase("boundaries", 0x41, "", "bundle", [
           { name: "zero.bin", type: octet, generated: { seed: 11, length: 0 } },
           { name: "one.bin", type: octet, generated: { seed: 12, length: 1 } },
-          { name: "under.bin", type: octet, generated: { seed: 13, length: chunk - 1 } },
-          { name: "exact.bin", type: octet, generated: { seed: 14, length: chunk } },
-          { name: "over.bin", type: octet, generated: { seed: 15, length: chunk + 1 } },
-          { name: "two-plus.bin", type: octet, generated: { seed: 16, length: 2 * chunk + 3 } },
+          {
+            name: "under.bin",
+            type: octet,
+            generated: { seed: 13, length: BUNDLE_PIECE_SIZE - 1 },
+          },
+          { name: "exact.bin", type: octet, generated: { seed: 14, length: BUNDLE_PIECE_SIZE } },
+          { name: "over.bin", type: octet, generated: { seed: 15, length: BUNDLE_PIECE_SIZE + 1 } },
+          {
+            name: "four-mib-plus.bin",
+            type: octet,
+            generated: { seed: 16, length: 4 * 1024 * 1024 + 3 },
+          },
         ]),
       );
+      const many = Array.from({ length: 1500 }, (_, i) => ({
+        name: `many/file-${String(i).padStart(4, "0")}.txt`,
+        type: "text/plain",
+        generated: { seed: 100 + i, length: i % 97 },
+      }));
+      const listLength = planStream(
+        many.map((f) => ({ name: f.name, type: f.type, size: f.generated.length })),
+      ).listBytes.length;
+      if (listLength <= BUNDLE_PIECE_SIZE) {
+        throw new Error(`the list of ${listLength} bytes must span two chunks`);
+      }
+      cases.push(await makeCase("many", 0x61, "", "bundle", many));
     }
     const transfer = [
       makeTransferCase(
@@ -354,16 +455,16 @@ describe("cross-implementation vectors", () => {
     writeFileSync(path.join(dir, "ts-vectors.json"), `${JSON.stringify(vectors, null, 2)}\n`);
   });
 
-  const files = [path.join(TESTDATA, "go-vectors.json")];
+  const files: Array<[string, Kind]> = [[path.join(TESTDATA, "go-vectors.json"), "current"]];
   if (process.env.VECTORS_DIR) {
     const dir = path.resolve(process.env.VECTORS_DIR);
     for (const name of readdirSync(dir)) {
-      if (name.endsWith(".json")) files.push(path.join(dir, name));
+      if (name.endsWith(".json")) files.push([path.join(dir, name), "current"]);
     }
   }
-  const unpadded = path.join(TESTDATA, "go-vectors-unpadded.json");
-  files.push(unpadded);
-  for (const file of files) {
+  files.push([path.join(TESTDATA, "go-vectors-v2.json"), "v2"]);
+  files.push([path.join(TESTDATA, "go-vectors-unpadded.json"), "v2-unpadded"]);
+  for (const [file, kind] of files) {
     it(`reads what the other implementation wrote: ${path.basename(file)}`, LONG, async () => {
       if (!existsSync(file)) {
         throw new Error(`${file} is missing; see the comment at the top of this test`);
@@ -372,7 +473,7 @@ describe("cross-implementation vectors", () => {
       expect(v.cases.length).toBeGreaterThan(0);
       expect(v.transfer?.length ?? 0).toBeGreaterThan(0);
       for (const c of v.cases) {
-        await checkCase(c, file !== unpadded);
+        await checkCase(c, kind);
       }
       for (const c of v.transfer) {
         checkTransferCase(c);

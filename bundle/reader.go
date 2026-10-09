@@ -34,7 +34,8 @@ func CachingFetcher(ctx context.Context, fetch RangeFetcher, bundleSize int64) (
 	}, nil
 }
 
-// ReadManifest fetches the footer and the manifest and checks both.
+// ReadManifest fetches a version 2 bundle's footer and manifest and checks
+// both. Open reads bundles of either version.
 func ReadManifest(ctx context.Context, fetch RangeFetcher, ks *keys.KeySet, bundleSize int64) (*Manifest, error) {
 	if bundleSize < FooterLength {
 		return nil, ErrInvalidFooter
@@ -43,6 +44,11 @@ func ReadManifest(ctx context.Context, fetch RangeFetcher, ks *keys.KeySet, bund
 	if err != nil {
 		return nil, err
 	}
+	return readManifest(ctx, fetch, ks, bundleSize, trailer)
+}
+
+// readManifest is ReadManifest with the footer already fetched.
+func readManifest(ctx context.Context, fetch RangeFetcher, ks *keys.KeySet, bundleSize int64, trailer []byte) (*Manifest, error) {
 	footer, err := ParseFooter(trailer)
 	if err != nil {
 		return nil, err
@@ -78,9 +84,9 @@ func ReadManifest(ctx context.Context, fetch RangeFetcher, ks *keys.KeySet, bund
 	return &manifest, nil
 }
 
-// DecryptFile streams one file's plaintext to w, fetching neighbouring
-// records together up to CoalesceBytes of plaintext per request. progress,
-// if set, is told the plaintext bytes written so far.
+// DecryptFile streams one file of a version 2 bundle to w, fetching
+// neighbouring records together up to CoalesceBytes of plaintext per
+// request. progress, if set, is told the plaintext bytes written so far.
 func DecryptFile(ctx context.Context, fetch RangeFetcher, ks *keys.KeySet, file File, w io.Writer, progress func(written int64)) error {
 	var written int64
 	for start := 0; start < len(file.Chunks); {

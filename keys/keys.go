@@ -1,8 +1,8 @@
 // Package keys derives every key and token of a secret from its share secret
-// and seals and opens the two kinds of ciphertext the format has: the metadata
-// envelope and bundle records. It mirrors web/frontend/src/lib/encryption.ts
-// byte for byte; the vectors test in the parent package checks the two
-// implementations against each other.
+// and seals and opens the ciphertext the format has: the metadata envelope,
+// the chunks of a bundle, and the records of a version 2 bundle. It mirrors
+// ts/src/encryption.ts byte for byte; the vectors test in the parent
+// directory checks the two implementations against each other.
 package keys
 
 import (
@@ -10,6 +10,7 @@ import (
 	"crypto/rand"
 	"crypto/sha512"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,6 +18,8 @@ import (
 
 	"golang.org/x/crypto/chacha20poly1305"
 	"golang.org/x/crypto/scrypt"
+
+	"github.com/secretli/format/internal/padme"
 )
 
 const (
@@ -28,11 +31,26 @@ const (
 	// NonceLength is the XChaCha20-Poly1305 nonce stored in front of every
 	// ciphertext.
 	NonceLength = chacha20poly1305.NonceSizeX
-	// RecordOverhead is what a bundle record adds to its plaintext: the nonce
-	// and the Poly1305 tag.
+	// RecordOverhead is what a version 2 bundle record adds to its plaintext:
+	// the nonce and the Poly1305 tag.
 	RecordOverhead = NonceLength + chacha20poly1305.Overhead
+	// ChunkPrefixLength is the random prefix in front of a bundle, which every
+	// chunk's nonce begins with.
+	ChunkPrefixLength = 16
+	// ChunkOverhead is what a bundle chunk adds to its plaintext: the
+	// Poly1305 tag. The nonce is not stored.
+	ChunkOverhead = chacha20poly1305.Overhead
+	// MaxChunkIndex is the highest chunk number seven bytes of the nonce hold.
+	MaxChunkIndex = 1<<56 - 1
+
+	// metaMinPadded and metaMaxPadded bound the envelope's padded plaintext:
+	// 512 bytes at least, and no more than the server's 8,192 characters for
+	// an envelope allow (FORMAT.md section 4).
+	metaMinPadded = 512
+	metaMaxPadded = 6101
 
 	envelopeVersion  = "v2"
+	streamAADSuffix  = "stream:v3"
 	derivationPrefix = "secretli:derivation:v1"
 	publicIDLength   = 16
 
@@ -55,12 +73,12 @@ var (
 
 // Meta is the small envelope stored next to the blob, encrypted with the
 // metadata key so that anyone holding the link can read it without opening
-// the secret.
+// the secret. The files' names are only in the bundle; envelopes written
+// before version 3 also carry bundle_name, which readers ignore.
 type Meta struct {
 	// Type is "text" or "bundle".
 	Type              string `json:"type"`
 	PasswordProtected bool   `json:"password_protected"`
-	BundleName        string `json:"bundle_name,omitempty"`
 }
 
 // Encoded is a key set as it appears in links and API calls: unpadded base64url.
@@ -157,10 +175,17 @@ func (k *KeySet) HasDeletionToken() bool {
 }
 
 // EncryptMeta seals the envelope: v2$base64url(nonce)$base64url(ciphertext).
+// The JSON is padded with spaces, so that the envelope's length says nothing
+// about what it holds (FORMAT.md section 4).
 func (k *KeySet) EncryptMeta(meta Meta) (string, error) {
-	plaintext, err := json.Marshal(meta)
+	encoded, err := json.Marshal(meta)
 	if err != nil {
 		return "", fmt.Errorf("encode metadata: %w", err)
+	}
+	plaintext := make([]byte, metaPaddedLength(len(encoded)))
+	copy(plaintext, encoded)
+	for i := len(encoded); i < len(plaintext); i++ {
+		plaintext[i] = ' '
 	}
 	nonce, err := newNonce()
 	if err != nil {
@@ -174,7 +199,9 @@ func (k *KeySet) EncryptMeta(meta Meta) (string, error) {
 	return envelopeVersion + "$" + encode(nonce) + "$" + encode(ciphertext), nil
 }
 
-// DecryptMeta opens an envelope made by EncryptMeta.
+// DecryptMeta opens an envelope made by EncryptMeta. JSON allows white space
+// after a value, so the padding needs no handling, and an envelope from
+// before it was padded opens all the same.
 func (k *KeySet) DecryptMeta(envelope string) (Meta, error) {
 	parts := strings.Split(envelope, "$")
 	if len(parts) != 3 || parts[0] != envelopeVersion {
@@ -203,9 +230,74 @@ func (k *KeySet) DecryptMeta(envelope string) (Meta, error) {
 	return meta, nil
 }
 
-// EncryptRecord seals one bundle record with a fresh nonce, which is stored
-// in front of the ciphertext. The suffix binds the record to its place in
-// the bundle.
+// metaPaddedLength is how long the envelope's plaintext is for JSON of n
+// bytes: max(512, padme(n)), but no more than 6,101 bytes, and JSON longer
+// than that is not padded.
+func metaPaddedLength(n int) int {
+	if n > metaMaxPadded {
+		return n
+	}
+	return min(metaMaxPadded, max(metaMinPadded, int(padme.Padme(int64(n)))))
+}
+
+// EncryptChunk seals chunk index of a bundle. The nonce is not stored: it is
+// the bundle's prefix, the index in seven bytes and the last flag, so a chunk
+// opens only in its own place and the last one only as the last (FORMAT.md
+// section 5). The ciphertext is ChunkOverhead bytes longer than plaintext.
+func (k *KeySet) EncryptChunk(prefix []byte, index int64, last bool, plaintext []byte) ([]byte, error) {
+	nonce, err := chunkNonce(prefix, index, last)
+	if err != nil {
+		return nil, err
+	}
+	aead, err := chacha20poly1305.NewX(k.blobKey)
+	if err != nil {
+		return nil, fmt.Errorf("chunk cipher: %w", err)
+	}
+	return aead.Seal(make([]byte, 0, len(plaintext)+aead.Overhead()), nonce, plaintext, k.recordAAD([]byte(streamAADSuffix))), nil
+}
+
+// DecryptChunk opens a chunk made by EncryptChunk for the same place.
+func (k *KeySet) DecryptChunk(prefix []byte, index int64, last bool, chunk []byte) ([]byte, error) {
+	nonce, err := chunkNonce(prefix, index, last)
+	if err != nil {
+		return nil, err
+	}
+	if len(chunk) < ChunkOverhead {
+		return nil, ErrDecrypt
+	}
+	aead, err := chacha20poly1305.NewX(k.blobKey)
+	if err != nil {
+		return nil, fmt.Errorf("chunk cipher: %w", err)
+	}
+	plaintext, err := aead.Open(make([]byte, 0, len(chunk)-aead.Overhead()), nonce, chunk, k.recordAAD([]byte(streamAADSuffix)))
+	if err != nil {
+		return nil, ErrDecrypt
+	}
+	return plaintext, nil
+}
+
+// chunkNonce is prefix (16 bytes) | index (7 bytes, big-endian) | last (1 byte).
+func chunkNonce(prefix []byte, index int64, last bool) ([]byte, error) {
+	if len(prefix) != ChunkPrefixLength {
+		return nil, errors.New("bundle prefix must be 16 bytes")
+	}
+	if index < 0 || index > MaxChunkIndex {
+		return nil, errors.New("chunk index out of range")
+	}
+	nonce := make([]byte, NonceLength)
+	copy(nonce, prefix)
+	var counter [8]byte
+	binary.BigEndian.PutUint64(counter[:], uint64(index))
+	copy(nonce[ChunkPrefixLength:], counter[1:])
+	if last {
+		nonce[NonceLength-1] = 1
+	}
+	return nonce, nil
+}
+
+// EncryptRecord seals one version 2 bundle record with a fresh nonce, which
+// is stored in front of the ciphertext. The suffix binds the record to its
+// place in the bundle.
 func (k *KeySet) EncryptRecord(plaintext, aadSuffix []byte) ([]byte, error) {
 	nonce, err := newNonce()
 	if err != nil {

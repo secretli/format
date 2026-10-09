@@ -9,9 +9,9 @@ import (
 	"github.com/secretli/format/keys"
 )
 
-// Encrypt builds the whole bundle in memory: every record, the manifest and
-// the footer. Uploads stream records to the server instead (see the share
-// package); this is for small bundles and for tests.
+// Encrypt builds a whole version 2 bundle in memory: every record, the
+// manifest and the footer. Uploads stream records to the server instead;
+// this is for small bundles and for tests.
 func Encrypt(plan *Plan, sources []Source, ks *keys.KeySet) ([]byte, error) {
 	out := make([]byte, 0, plan.TotalSize)
 	buf := make([]byte, ChunkSize)
