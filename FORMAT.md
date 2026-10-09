@@ -55,12 +55,12 @@ v2$<base64url(nonce)>$<base64url(ciphertext)>
 The plaintext is JSON:
 
 ```json
-{"type":"text","password_protected":false,"bundle_name":"secret.txt"}
+{"type":"text","password_protected":false}
 ```
 
-sealed with `meta_key`, a random 24-byte nonce, and the AAD `public_id || "meta"` (the 16 raw bytes followed by the four ASCII letters). `type` is `text` for a note and `bundle` for files; either way the content is a bundle (section 5), a note being a bundle of one file named `secret.txt` with type `text/plain`. `bundle_name` is what clients call the content: the file's name for one file (or `Secretli file` when it has none), `Secretli bundle (N files)` for several; it may be absent.
+sealed with `meta_key`, a random 24-byte nonce, and the AAD `public_id || "meta"` (the 16 raw bytes followed by the four ASCII letters). `type` is `text` for a note and `bundle` for files; either way the content is a bundle (section 5), a note being a bundle of one file named `secret.txt` with type `text/plain`. Envelopes written before version 3 also carry `bundle_name`; readers ignore it, like any field they don't know. The names of the files are only in the bundle.
 
-**Padding.** Without it, the envelope's length would tell the server whether a secret is a note or files, whether it has a password, and how long its name is. Writers pad the JSON with spaces (`0x20`) after its closing brace to `max(512, padme(n))` bytes, `n` being the JSON's length and `padme` the rounding of section 6, but to no more than 6,101 bytes, the most the server's limit of 8,192 characters for an envelope allows; JSON longer than that is not padded. 512 bytes hold any name a file system allows, so in practice every envelope is 740 characters long. JSON allows white space after a value, so readers parse a padded envelope like any other and must not reject trailing white space.
+**Padding.** Without it, the envelope's length would tell the server whether a secret is a note or files and whether it has a password. Writers pad the JSON with spaces (`0x20`) after its closing brace to `max(512, padme(n))` bytes, `n` being the JSON's length and `padme` the rounding of section 6, but to no more than 6,101 bytes, the most the server's limit of 8,192 characters for an envelope allows; JSON longer than that is not padded. So every envelope is 740 characters long, with room for fields to come. JSON allows white space after a value, so readers parse a padded envelope like any other and must not reject trailing white space.
 
 Readers accept only version `v2` and a 24-byte nonce.
 
@@ -222,7 +222,7 @@ The upload limit is 1 GiB of bundle. Planning needs no file contents, so clients
       "share_secret": "<base64url>",
       "password": "correct horse battery staple",
       "derived": { "public_id": "…", "metadata_token": "…", "blob_token": "…", "password_blob_token": "…" },
-      "meta": { "type": "bundle", "password_protected": true, "bundle_name": "…" },
+      "meta": { "type": "bundle", "password_protected": true },
       "encrypted_meta": "v2$…$…",
       "files": [
         { "name": "hello.txt", "type": "text/plain", "content_base64": "…" },
