@@ -113,6 +113,8 @@ The file list names the files and their sizes, in the order their bytes follow:
 
 A note is a bundle of one file named `secret.txt` with type `text/plain`; the envelope's `type` (section 4) tells a reader to show it as text.
 
+Writers encode the list as compact JSON, without white space and with the keys in the order shown, and escape strings as ECMAScript's `JSON.stringify` does: `\"` and `\\`, `\b \f \n \r \t`, any other character below U+0020 as `\u00xx` with lower-case hex digits, and everything else, U+2028 and U+2029 included, as plain UTF-8. Names and types are Unicode text; a writer replaces whatever is not (a lone surrogate, bytes that are not UTF-8) with U+FFFD. Readers accept any valid JSON: this rule only makes the two writers' bundles identical (section 10).
+
 The files' bytes follow the list one after another, with nothing between them. File `k` starts at `4 + list length + the sizes of files 0 … k−1` and ends `size` bytes later; a file of size 0 takes no bytes. The list holds no offsets: positions come only from this sum.
 
 Readers check the list before using it: its length is from 2 to 4,194,304 bytes (4 MiB); it is a JSON object whose `files` is an array of at least one file; every `name` is a non-empty string, every `type` a string and every `size` an integer from 0 to 2^53 − 1; and `4 + list length + the sum of all sizes` is at most the length of the stream. Readers ignore fields they don't know, in the list and in each file, so that fields can be added without a new version.
