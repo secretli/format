@@ -1,8 +1,14 @@
-// Package bundle is the encrypted blob format: files cut into 4 MiB records,
-// each sealed and bound to its position, followed by an encrypted manifest
-// and a fixed footer that says where the manifest is. It mirrors
-// web/frontend/src/lib/bundle.ts; the vectors test checks the two against
-// each other.
+// Package bundle is the encrypted blob format. A bundle is a random prefix
+// and one stream, the file list, the files and zero padding, sealed in
+// 64 KiB chunks whose nonces count up from the prefix (FORMAT.md sections 5
+// and 6): NewStreamPlan lays it out, NewEncrypter writes it, and Open reads
+// it.
+//
+// Version 2 bundles, files cut into 4 MiB records followed by an encrypted
+// manifest and a plaintext footer (section 7), stay readable and writable
+// while clients move to version 3: NewPlan and Encrypt write them, Open and
+// ReadManifest read them. The package mirrors ts/src; the vectors test checks
+// the two against each other.
 package bundle
 
 import (
@@ -14,29 +20,34 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math/bits"
 	"sort"
 
+	"github.com/secretli/format/internal/padme"
 	"github.com/secretli/format/keys"
 )
 
 const (
-	// FooterLength is the fixed size of the trailer at the end of a bundle.
+	// FooterLength is the fixed size of the trailer at the end of a version 2
+	// bundle.
 	FooterLength = 64
-	// ChunkSize is the plaintext size of every record but a file's last.
+	// ChunkSize is the plaintext size of every version 2 record but a file's
+	// last.
 	ChunkSize = 4 * 1024 * 1024
-	// MaxManifestBytes caps the manifest; very many files overflow it.
+	// MaxManifestBytes caps the version 2 manifest; very many files overflow
+	// it.
 	MaxManifestBytes = 256 * 1024
-	// RecordOverhead is what encryption adds to each record.
+	// RecordOverhead is what encryption adds to each version 2 record.
 	RecordOverhead = keys.RecordOverhead
 	// CoalesceBytes bounds how much plaintext one range request fetches when
-	// reading: neighbouring records are read together up to this much.
+	// reading: neighbouring chunks or records are read together up to this
+	// much.
 	CoalesceBytes = 16 * 1024 * 1024
 	// SmallBundleBytes: bundles up to this size are fetched whole, in one
-	// request, instead of footer, manifest and records separately.
+	// request. Of a larger version 3 bundle, Open fetches this much first.
 	SmallBundleBytes = 1024 * 1024
 	// MinPaddedSize is the size writers pad the smallest bundles to, so that
-	// every short note looks the same to the server.
+	// every short note looks the same to the server: a version 3 stream, or
+	// a whole version 2 bundle.
 	MinPaddedSize = 4096
 
 	version = 2
@@ -151,8 +162,8 @@ type Plan struct {
 	TotalSize int64
 }
 
-// NewPlan lays out the bundle for these sources, padded so that its size
-// says little about its content (FORMAT.md section 6).
+// NewPlan lays out a version 2 bundle for these sources, padded inside the
+// manifest (FORMAT.md section 7.2).
 func NewPlan(sources []Source, bundleName string) (*Plan, error) {
 	return newPlan(sources, bundleName, rand.Reader)
 }
@@ -228,8 +239,8 @@ func newPlan(sources []Source, bundleName string, random io.Reader) (*Plan, erro
 	}, nil
 }
 
-// PaddedSize is the size writers pad a bundle of this size to: Padmé
-// rounding, and never less than MinPaddedSize.
+// PaddedSize is the size writers pad a stream (or a version 2 bundle) of
+// this size to: Padmé rounding, and never less than MinPaddedSize.
 func PaddedSize(size int64) int64 {
 	return max(MinPaddedSize, Padme(size))
 }
@@ -240,13 +251,7 @@ func PaddedSize(size int64) int64 {
 // 12.5% and leaks only O(log log size) bits, and a size at or below a power
 // of two stays at or below it.
 func Padme(size int64) int64 {
-	if size < 2 {
-		return size
-	}
-	e := bits.Len64(uint64(size)) - 1 // floor(log2 size)
-	s := bits.Len(uint(e))            // floor(log2 e) + 1
-	mask := int64(1)<<(e-s) - 1
-	return (size + mask) &^ mask
+	return padme.Padme(size)
 }
 
 // randomPadding draws n characters of the padding alphabet.
@@ -261,7 +266,8 @@ func randomPadding(random io.Reader, n int64) (string, error) {
 	return string(b), nil
 }
 
-// DefaultBundleName is what the web app calls a bundle of these files.
+// DefaultBundleName is what the web app calls a bundle of these files. Only
+// the version 2 manifest has a bundle name.
 func DefaultBundleName(names []string) string {
 	if len(names) == 1 {
 		if names[0] != "" {
@@ -272,9 +278,10 @@ func DefaultBundleName(names []string) string {
 	return fmt.Sprintf("Secretli bundle (%d files)", len(names))
 }
 
-// EstimateEncryptedSize is an upper bound on the bundle size for files of
-// these sizes, used to check the upload limit before planning. It holds for
-// padded bundles too: padding never takes the manifest past its cap.
+// EstimateEncryptedSize is an upper bound on the version 2 bundle size for
+// files of these sizes, used to check the upload limit before planning. It
+// holds for padded bundles too: padding never takes the manifest past its
+// cap. A version 3 plan states its exact size.
 func EstimateEncryptedSize(sizes []int64) int64 {
 	var chunks, plaintext int64
 	for _, size := range sizes {

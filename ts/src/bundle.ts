@@ -1,4 +1,7 @@
 import { BUNDLE_RECORD_OVERHEAD_BYTES, type KeySet } from "./encryption.js";
+import { padme } from "./padme.js";
+
+export { padme };
 
 export const BUNDLE_FOOTER_LENGTH = 64;
 export const DEFAULT_BUNDLE_CHUNK_SIZE = 4 * 1024 * 1024;
@@ -7,13 +10,15 @@ export const DOWNLOAD_ALL_BUNDLE_COALESCED_PLAINTEXT_BYTES = 64 * 1024 * 1024;
 export const MAX_BUNDLE_MANIFEST_BYTES = 256 * 1024;
 /**
  * Bundles at or below this size are fetched in one request and served from
- * memory. Without it, reading a short text secret costs three round trips
- * (footer, manifest, content) for a few hundred bytes.
+ * memory. Without it, reading a short text secret costs several round trips
+ * for a few hundred bytes. Of a larger version 3 bundle, openBundle fetches
+ * this much first.
  */
 export const SMALL_BUNDLE_CACHE_BYTES = 1024 * 1024;
 /**
  * The size writers pad the smallest bundles to, so that every short note
- * looks the same to the server.
+ * looks the same to the server: a version 3 stream, or a whole version 2
+ * bundle.
  */
 export const MIN_PADDED_BUNDLE_SIZE = 4096;
 
@@ -48,8 +53,8 @@ export interface BundleManifest {
   readonly chunkSize: number;
   readonly files: BundleFile[];
   /**
-   * Random characters that make the bundle's size say little (FORMAT.md
-   * section 6). Writers put it last; readers ignore it, whatever it holds.
+   * Random characters that pad the bundle (FORMAT.md section 7.2). Writers
+   * put it last; readers ignore it, whatever it holds.
    */
   readonly padding?: string;
 }
@@ -95,7 +100,14 @@ export interface DecryptedBundleFile {
 
 export interface DecryptBundleFilesOptions {
   readonly maxCoalescedPlaintextBytes?: number;
-  readonly onProgress?: (progress: { readonly decryptedBytes: number }) => void;
+  /**
+   * Told after every fetched group: decryptedBytes is where in the bundle the group ends,
+   * plaintextBytes how much plaintext has been decrypted so far.
+   */
+  readonly onProgress?: (progress: {
+    readonly decryptedBytes: number;
+    readonly plaintextBytes: number;
+  }) => void;
 }
 
 export type BundleRangeFetcher = (start: number, end: number) => Promise<Uint8Array>;
@@ -113,8 +125,8 @@ interface BundleChunkRef {
 }
 
 /**
- * Lays out the bundle for these files, padded so that its size says little
- * about its content (FORMAT.md section 6).
+ * Lays out a version 2 bundle for these files, padded inside the manifest
+ * (FORMAT.md section 7.2). planStream lays out a version 3 bundle.
  */
 export function planBundle(
   files: File[],
@@ -191,30 +203,12 @@ export function planBundle(
   };
 }
 
-/** The size writers pad a bundle of this size to: Padmé rounding, and never less than 4,096 bytes. */
+/**
+ * The size writers pad a stream (or a version 2 bundle) of this size to: Padmé rounding, and
+ * never less than 4,096 bytes.
+ */
 export function paddedBundleSize(size: number): number {
   return Math.max(MIN_PADDED_BUNDLE_SIZE, padme(size));
-}
-
-/**
- * Rounds a size up so that it keeps only about log2(log2(size)) significant
- * bits (Nikitin et al., "Reducing Metadata Leakage from Encrypted Files and
- * Communication with PURBs", 2019). That costs at most 12.5%, and a size at or
- * below a power of two stays at or below it. JavaScript's bit operators are
- * 32-bit and Math.log2 is floating point, so this counts binary digits and
- * divides by powers of two instead, which is exact for safe integers.
- */
-export function padme(size: number): number {
-  if (!Number.isSafeInteger(size) || size < 0) {
-    throw new Error("invalid bundle size");
-  }
-  if (size < 2) {
-    return size;
-  }
-  const e = size.toString(2).length - 1; // floor(log2 size)
-  const s = e.toString(2).length; // floor(log2 e) + 1
-  const step = 2 ** (e - s);
-  return Math.ceil(size / step) * step;
 }
 
 function manifestByteLength(manifest: BundleManifest): number {
@@ -256,6 +250,7 @@ export async function cachingRangeFetcher(
   return async (start: number, end: number) => whole.slice(start, end + 1);
 }
 
+/** Reads a version 2 bundle's footer and manifest; openBundle reads either version. */
 export async function readBundleManifest(
   fetchRange: BundleRangeFetcher,
   keySet: KeySet,
@@ -290,6 +285,10 @@ export async function readBundleManifest(
   return { footer, manifest };
 }
 
+/**
+ * Decrypts files of a version 2 bundle into one Blob each, fetching neighbouring records
+ * together.
+ */
 export async function decryptBundleFiles(
   files: readonly BundleFile[],
   keySet: KeySet,
@@ -309,6 +308,7 @@ export async function decryptBundleFiles(
     .sort((a, b) => a.chunk.offset - b.chunk.offset);
   const maxCoalescedPlaintextBytes =
     options.maxCoalescedPlaintextBytes ?? MAX_BUNDLE_COALESCED_PLAINTEXT_BYTES;
+  let plaintextBytes = 0;
 
   for (const group of coalesceChunks(refs, maxCoalescedPlaintextBytes)) {
     const encryptedGroup = await fetchRange(group.offset, rangeEnd(group.offset, group.length));
@@ -344,8 +344,10 @@ export async function decryptBundleFiles(
         });
       }
     }
+    plaintextBytes += group.plaintextSize;
     options.onProgress?.({
       decryptedBytes: group.offset + group.length,
+      plaintextBytes,
     });
   }
 
@@ -358,9 +360,10 @@ export function manifestTotalSize(manifest: BundleManifest): number {
 }
 
 /**
- * An upper bound on the bundle size for files of these sizes, used to check
- * the upload limit before planning. It holds for padded bundles too: padding
- * never takes the manifest past its cap.
+ * An upper bound on the version 2 bundle size for files of these sizes, used
+ * to check the upload limit before planning. It holds for padded bundles too:
+ * padding never takes the manifest past its cap. plannedBundleSize gives a
+ * version 3 bundle's exact size.
  */
 export function estimateBundleEncryptedSize(fileSizes: number[]): number {
   const chunkCount = fileSizes.reduce(

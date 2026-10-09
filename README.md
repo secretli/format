@@ -1,6 +1,6 @@
 # Secretli format
 
-The encrypted format behind [Secretli](https://secretli.app): how a share secret becomes keys and tokens, how the metadata envelope and the bundle of sealed records are laid out, what a link looks like, and how a link is handed to another device with a short code. Two implementations, one specification, and tests that hold them to each other.
+The encrypted format behind [Secretli](https://secretli.app): how a share secret becomes keys and tokens, how the metadata envelope and the bundle (one stream sealed in 64 KiB chunks) are laid out, what a link looks like, and how a link is handed to another device with a short code. Two implementations, one specification, and tests that hold them to each other.
 
 - **[FORMAT.md](FORMAT.md)** is the specification. Everything else follows it.
 - **Go**: `github.com/secretli/format` with the packages `keys`, `bundle`, `link`, and `transfer` with `cpace` for the short code.
@@ -26,18 +26,21 @@ import (
 ks, _ := keys.Generate()
 blobKeys, _ := ks.WithPassword("optional")
 sources := []bundle.Source{{Name: "notes.txt", Type: "text/plain", Size: 5, Reader: strings.NewReader("notes")}}
-plan, _ := bundle.NewPlan(sources, bundle.DefaultBundleName([]string{"notes.txt"}))
-envelope, _ := ks.EncryptMeta(keys.Meta{Type: "bundle", PasswordProtected: true, BundleName: plan.Manifest.BundleName})
-data, _ := bundle.Encrypt(plan, sources, blobKeys) // small bundles; stream plan.Records yourself for large ones
+plan, _ := bundle.NewStreamPlan(sources) // plan.TotalSize is exact before anything is read
+envelope, _ := ks.EncryptMeta(keys.Meta{Type: "bundle", PasswordProtected: true})
+enc, _ := bundle.NewEncrypter(plan, sources, blobKeys) // an io.Reader: cut it into upload parts
+data, _ := io.ReadAll(enc)
 l := link.Link{Origin: "https://secretli.app", Secret: ks.Encoded().ShareSecret, DeletionToken: ks.Encoded().DeletionToken}
 
 // Opening one: the link's secret, the password if any, and byte ranges of the bundle.
 parsed, _ := link.Parse(l.String())
 blobKeys, _ = keys.FromShareSecret(parsed.Secret, "optional")
 fetch := func(_ context.Context, start, end int64) ([]byte, error) { return data[start : end+1], nil }
-manifest, _ := bundle.ReadManifest(ctx, fetch, blobKeys, int64(len(data)))
-_ = bundle.DecryptFile(ctx, fetch, blobKeys, manifest.Files[0], os.Stdout, nil)
+b, _ := bundle.Open(ctx, fetch, blobKeys, int64(len(data))) // b.Files: name, type and size of each
+_ = b.DecryptFile(ctx, 0, os.Stdout, nil)                    // b.Decrypt reads several in one pass
 ```
+
+`bundle.Open` also reads bundles of version 2, which `bundle.NewPlan` and `bundle.Encrypt` still write while clients move to version 3.
 
 Handing a link over with a code runs over a relay you implement against the server's transfer API; `transfer` does the cryptography and the order of the legs:
 
@@ -70,19 +73,19 @@ pnpm add https://github.com/secretli/format/releases/download/v0.2.0/secretli-fo
 From then on it is an ordinary dependency named `@secretli/format`: the lockfile pins the archive by its hash, the code imports it by name, and installs need no token. To move to a newer version, add the newer release's archive the same way. It ships as ES modules with type declarations, for browsers and Node 20 or later.
 
 ```ts
-import {
-  KeySet, createEncryptedBundle, readBundleManifest, decryptBundleFiles, parseShareLink,
-} from "@secretli/format";
+import { KeySet, cutIntoParts, encryptStream, openBundle, planStream } from "@secretli/format";
 
 const keys = await KeySet.generateRandom();
 const blobKeys = await KeySet.fromShareSecret(keys.getEncoded().shareSecret, "optional");
-const { blob, manifest } = await createEncryptedBundle([new File(["notes"], "notes.txt")], blobKeys);
-const envelope = await keys.encryptMeta({ type: "bundle", password_protected: true, bundle_name: manifest.bundleName });
+const envelope = await keys.encryptMeta({ type: "bundle", password_protected: true });
+const files = [new File(["notes"], "notes.txt", { type: "text/plain" })];
+const plan = planStream(files); // plan.totalSize is exact before anything is read
+for await (const part of cutIntoParts(encryptStream(plan, files, blobKeys), 32 * 1024 * 1024)) {
+  // … upload the part …
+}
 
-const bytes = new Uint8Array(await blob.arrayBuffer());
-const range = async (start: number, end: number) => bytes.slice(start, end + 1);
-const read = await readBundleManifest(range, blobKeys, bytes.length);
-const files = await decryptBundleFiles(read.manifest.files, blobKeys, range);
+const opened = await openBundle(fetchRange, blobKeys, size); // opened.files: name, type and size
+const [{ blob }] = await opened.decryptFiles([0]);
 ```
 
 The transfer has the same shape: `randomWords`, `createOffer`, `sendLink` and `formatCode` on the sending side, `parseCode` and `receiveLink` on the receiving one, each role over a `SenderRelay` or `ReceiverRelay` you implement.

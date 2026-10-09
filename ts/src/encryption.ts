@@ -3,6 +3,7 @@ import { hkdf } from "@noble/hashes/hkdf.js";
 import { scryptAsync } from "@noble/hashes/scrypt.js";
 import { sha512 } from "@noble/hashes/sha2.js";
 import { base64UrlDecode, base64UrlEncode } from "./base64.js";
+import { padme } from "./padme.js";
 
 export interface EncodedKeySet {
   readonly shareSecret: string;
@@ -12,10 +13,14 @@ export interface EncodedKeySet {
   readonly deletionToken: string;
 }
 
+/**
+ * The metadata envelope: what anyone with the link can read. The files'
+ * names are only in the bundle; envelopes written before bundle version 3
+ * also carry bundle_name, which readers ignore.
+ */
 export interface SecretMeta {
   readonly type: "text" | "bundle";
   readonly password_protected: boolean;
-  readonly bundle_name?: string;
 }
 
 const ENVELOPE_VERSION = "v2";
@@ -24,9 +29,17 @@ const DERIVATION_PREFIX = `secretli:derivation:${DERIVATION_VERSION}`;
 const V2_NONCE_LENGTH = 24;
 const POLY1305_TAG_LENGTH = 16;
 
-/** Nonce plus Poly1305 tag stored alongside every encrypted bundle record. */
+/** Nonce plus Poly1305 tag stored alongside every version 2 bundle record. */
 export const BUNDLE_RECORD_OVERHEAD_BYTES = V2_NONCE_LENGTH + POLY1305_TAG_LENGTH;
 export const SHARE_SECRET_LENGTH = 32;
+/** The random prefix in front of a bundle, which every chunk's nonce begins with. */
+export const BUNDLE_PREFIX_LENGTH = 16;
+/** What a bundle chunk adds to its plaintext: the Poly1305 tag. The nonce is not stored. */
+export const BUNDLE_CHUNK_OVERHEAD_BYTES = POLY1305_TAG_LENGTH;
+/** The envelope's padded plaintext: 512 bytes at least, at most what 8,192 characters hold. */
+const META_MIN_PADDED = 512;
+const META_MAX_PADDED = 6101;
+const STREAM_AAD_SUFFIX = new TextEncoder().encode("stream:v3");
 
 function buildAad(publicID: Uint8Array, purpose: "meta" | "bundle"): Uint8Array {
   const suffix = new TextEncoder().encode(purpose);
@@ -102,11 +115,17 @@ export class KeySet {
   }
 
   /**
-   * Encrypt a metadata object into the envelope format: v2$base64url(nonce)$base64url(ciphertext)
+   * Encrypt a metadata object into the envelope format: v2$base64url(nonce)$base64url(ciphertext).
+   * The JSON is padded with spaces, so that the envelope's length says nothing about
+   * what it holds (FORMAT.md section 4).
    */
   async encryptMeta(meta: SecretMeta): Promise<string> {
     const nonce = crypto.getRandomValues(new Uint8Array(V2_NONCE_LENGTH));
-    const plaintext = new TextEncoder().encode(JSON.stringify(meta));
+    const json = new TextEncoder().encode(
+      JSON.stringify({ type: meta.type, password_protected: meta.password_protected }),
+    );
+    const plaintext = new Uint8Array(metaPaddedLength(json.length)).fill(0x20);
+    plaintext.set(json, 0);
     const aad = buildAad(this.publicID, "meta");
     const cipher = xchacha20poly1305(this.metaKey, nonce, aad);
     const ciphertext = cipher.encrypt(plaintext);
@@ -115,7 +134,8 @@ export class KeySet {
   }
 
   /**
-   * Decrypt an envelope string back to a metadata object.
+   * Decrypt an envelope string back to a metadata object. JSON allows white space after a
+   * value, so the padding needs no handling, and an envelope from before it opens alike.
    */
   async decryptMeta(envelope: string): Promise<SecretMeta> {
     const parts = envelope.split("$");
@@ -138,7 +158,40 @@ export class KeySet {
     return JSON.parse(new TextDecoder().decode(plaintext));
   }
 
-  /** Encrypts one bundle record with a fresh random nonce; the nonce is stored in the record. */
+  /**
+   * Seals chunk `index` of a bundle. The nonce is not stored: it is the bundle's prefix, the
+   * index in seven bytes and the last flag, so a chunk opens only in its own place and the
+   * last one only as the last (FORMAT.md section 5).
+   */
+  encryptBundleChunk(
+    prefix: Uint8Array,
+    index: number,
+    last: boolean,
+    plaintext: Uint8Array,
+  ): Uint8Array {
+    const nonce = bundleChunkNonce(prefix, index, last);
+    return xchacha20poly1305(this.blobKey, nonce, this.streamAad()).encrypt(plaintext);
+  }
+
+  /** Opens a chunk sealed by encryptBundleChunk for the same place. */
+  decryptBundleChunk(
+    prefix: Uint8Array,
+    index: number,
+    last: boolean,
+    chunk: Uint8Array,
+  ): Uint8Array {
+    const nonce = bundleChunkNonce(prefix, index, last);
+    if (chunk.length < BUNDLE_CHUNK_OVERHEAD_BYTES) {
+      throw new Error("invalid bundle chunk");
+    }
+    return xchacha20poly1305(this.blobKey, nonce, this.streamAad()).decrypt(chunk);
+  }
+
+  private streamAad(): Uint8Array {
+    return bundleAad(this.publicID, STREAM_AAD_SUFFIX);
+  }
+
+  /** Encrypts one version 2 bundle record with a fresh random nonce; the nonce is stored in the record. */
   encryptBundlePart(data: Uint8Array, aadSuffix: Uint8Array): Uint8Array {
     const nonce = crypto.getRandomValues(new Uint8Array(V2_NONCE_LENGTH));
     return this.encryptBundlePartWithNonce(data, aadSuffix, nonce);
@@ -178,6 +231,38 @@ export class KeySet {
       deletionToken: base64UrlEncode(this.deletionToken),
     };
   }
+}
+
+/**
+ * The nonce of a bundle chunk: prefix (16 bytes) | index (7 bytes, big-endian) | last (1 byte).
+ */
+export function bundleChunkNonce(prefix: Uint8Array, index: number, last: boolean): Uint8Array {
+  if (prefix.length !== BUNDLE_PREFIX_LENGTH) {
+    throw new Error("bundle prefix must be 16 bytes");
+  }
+  if (!Number.isSafeInteger(index) || index < 0) {
+    throw new Error("chunk index out of range");
+  }
+  const nonce = new Uint8Array(V2_NONCE_LENGTH);
+  nonce.set(prefix, 0);
+  let rest = index;
+  for (let i = V2_NONCE_LENGTH - 2; i >= BUNDLE_PREFIX_LENGTH; i--) {
+    nonce[i] = rest % 256;
+    rest = Math.floor(rest / 256);
+  }
+  nonce[V2_NONCE_LENGTH - 1] = last ? 1 : 0;
+  return nonce;
+}
+
+/**
+ * How long the envelope's plaintext is for JSON of n bytes: max(512, padme(n)), but no
+ * more than 6,101 bytes, and JSON longer than that is not padded.
+ */
+function metaPaddedLength(n: number): number {
+  if (n > META_MAX_PADDED) {
+    return n;
+  }
+  return Math.min(META_MAX_PADDED, Math.max(META_MIN_PADDED, padme(n)));
 }
 
 function bundleAad(publicID: Uint8Array, suffix: Uint8Array): Uint8Array {
