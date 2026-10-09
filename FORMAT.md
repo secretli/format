@@ -7,11 +7,11 @@ Two independent implementations exist on purpose. They are checked against each 
 ## 1. Encodings and primitives
 
 - **Bytes as text** are unpadded base64url (RFC 4648 §5, no `=`) everywhere: links, tokens, the metadata envelope.
-- **Hashing**: SHA-256, lower-case hex, for upload parts and the manifest of a version 2 bundle; SHA-512 inside HKDF.
+- **Hashing**: SHA-256, lower-case hex, for upload parts; SHA-512 inside HKDF.
 - **Key derivation**: HKDF-SHA512 (RFC 5869) with no salt, which the RFC defines as a salt of 64 zero bytes, and an info string.
 - **Password derivation**: scrypt with N = 2^14, r = 8, p = 1, 32 bytes out.
 - **Encryption**: XChaCha20-Poly1305 with a 24-byte nonce and a 16-byte tag. Every message gets a fresh random nonce, stored in front of the ciphertext, except the chunks of a bundle, whose nonces count up from a random prefix (section 5).
-- **Integers** are big-endian: a bundle's list length and chunk numbers, the version 2 footer, and a transferred link's length.
+- **Integers** are big-endian: a bundle's list length and chunk numbers, and a transferred link's length.
 - **Handing over a link with a code** (section 11): CPace over ristretto255 with SHA-512, HMAC-SHA512, and HKDF-SHA512 salted with the session id.
 
 ## 2. The share secret and what is derived from it
@@ -89,7 +89,7 @@ What the nonce and the AAD guarantee:
 - **The chunk number** makes a chunk open only in its own place. Chunks that are moved, swapped or duplicated fail.
 - **The last flag** catches a bundle that was cut short or extended. The reader works out the chunks from the size the server reports; if what was stored is shorter or longer than what was written, the chunk the reader takes for the last one was not sealed as last, or the real last one is opened as one that is not, and opening it fails. Every chunk is authenticated on its own, so a reader that needs only chunks before that point still gets exactly what was written.
 - **`public_id`** ties every chunk to this secret.
-- **`"stream:v3"`** keeps chunks of this version and records of version 2 (section 7) from ever opening as one another.
+- **`"stream:v3"`** names the version, so that what another version sealed under the same key, such as a record of the retired version 2 (section 7), never opens as a chunk.
 
 The prefix is drawn fresh for every bundle, even though `blob_key` belongs to one secret. A client that retried a failed upload with the same keys and changed content would otherwise encrypt different plaintext under the same nonces, which breaks XChaCha20-Poly1305.
 
@@ -125,81 +125,13 @@ Seen without the keys, a bundle is 16 random bytes followed by ciphertext. Its s
 
 ## 7. Bundles of version 2
 
-Version 2 was the bundle layout before this one. Writers move to version 3 one after another, and readers read both until no version 2 bundle can exist any more (section 12). A bundle whose last 64 bytes begin with the magic `SLBNDL2\0` (section 7.3) is version 2; any other bundle is version 3. A version 3 bundle ends in ciphertext, which starts with those eight bytes with a probability of 2^−64.
-
-```
-record 0 | record 1 | … | record n−1 | encrypted manifest | footer (64 bytes)
-```
-
-### 7.1 Records
-
-Every file is cut into **chunks of 4 MiB (4,194,304 bytes) of plaintext**, the last chunk of a file holding whatever remains. An empty file has no chunks. Each chunk becomes one **record**:
-
-```
-nonce (24 bytes) | XChaCha20-Poly1305(blob_key, nonce, chunk, AAD) (chunk length + 16)
-```
-
-so a record is 40 bytes longer than its chunk. The records of all files follow one another in file order, then chunk order, starting at offset 0, with no gaps.
-
-The AAD of every record is `public_id || "bundle" || 0x00 || suffix`, where the suffix binds the record to its place:
-
-- for a chunk, `"chunk:" + fileIndex + ":" + chunkIndex + ":" + plaintextSize` in decimal ASCII, `fileIndex` being the file's position in the manifest and `chunkIndex` the chunk's position in the file, both counted from 0;
-- for the manifest, `"manifest:v2"`.
-
-Because the AAD carries position and size, a record that is moved, duplicated or cut fails to open, and the content needs no checksum of its own.
-
-### 7.2 The manifest
-
-The manifest lists the files and where their records are. Its JSON is encrypted as one record with the manifest AAD, so the encrypted manifest is also 40 bytes longer than its plaintext:
-
-```json
-{
-  "version": 2,
-  "bundleName": "Secretli bundle (2 files)",
-  "chunkSize": 4194304,
-  "files": [
-    {
-      "index": 0,
-      "path": "notes.txt",
-      "name": "notes.txt",
-      "type": "text/plain",
-      "size": 5,
-      "chunks": [
-        { "index": 0, "offset": 0, "length": 45, "plaintextSize": 5 }
-      ]
-    }
-  ],
-  "padding": "Xq0v…"
-}
-```
-
-`offset` counts bytes from the start of the bundle; `length` is the record's length. `type` is `application/octet-stream` when the type is unknown. The encoded manifest must not exceed 256 KiB (262,144 bytes).
-
-`padding`, the manifest's last field, holds random characters from the base64url alphabet. Writers sized it so that the bundle was `max(4096, padme(L))` bytes (section 6), `L` being the bundle's size with `"padding": ""`, and left it empty when the padded manifest would have passed 256 KiB. Since the footer states the manifest's length in the clear, this padding never hid the size of the content from anyone holding the bundle; that is why version 3 exists. Readers MUST ignore `padding`, whatever it holds, and a manifest without it is as valid as one with it.
-
-Readers validate before trusting a manifest: version 2; `chunkSize` 4,194,304; a non-empty bundle name; at least one file; file and chunk indices equal to their positions; non-empty `path` and `name`; `size` ≥ 0; every chunk with `0 < plaintextSize ≤ chunkSize` and `length = plaintextSize + 40`; chunk sizes adding up to the file's size (a file of size 0 has no chunks); and all records together tiling the bytes from offset 0 up to the manifest exactly, with neither gap nor overlap.
-
-### 7.3 The footer
-
-The last 64 bytes of the bundle:
-
-| offset | bytes | content |
-|---|---|---|
-| 0 | 8 | magic `SLBNDL2\0`, bytes `53 4C 42 4E 44 4C 32 00` |
-| 8 | 4 | version, 2 |
-| 12 | 4 | footer length, 64 |
-| 16 | 8 | length of the encrypted manifest |
-| 24 | 32 | SHA-256 of the encrypted manifest |
-| 56 | 8 | zero |
-
-A reader fetches the footer, then the encrypted manifest at `bundleSize − 64 − manifestLength`, checks its hash, opens it, validates it, and only then reads records. A manifest length of 40 bytes or less, or above 262,144 + 40, is rejected.
+Version 2 was the bundle layout before version 3: files cut into records of 4 MiB, an encrypted manifest and a plaintext footer. Readers no longer read it since v0.5.0 of this repository; its specification is in the history of this document in git, up to v0.4.0. A reader that is given a version 2 bundle takes it for version 3, and it fails like any bundle that does not open: its size is not one of a prefix and chunks, or its first chunk does not decrypt. The section stays so that the ones after it keep their numbers, which code comments cite.
 
 ## 8. Reading
 
 The server serves the bundle by byte range (`GET /api/v1/secrets/{public_id}/blob` with `Range: bytes=a-b`, both ends inclusive, at most 128 MiB per request) within a retrieval session. None of what follows changes the bytes; it is how round trips stay few, and how little the requests tell the server.
 
 - **The list.** A bundle of at most 1 MiB is fetched whole in one request. Of a larger one, the reader fetches the first 1 MiB, which holds the list unless it is very long; if the list length says the list goes on, the reader fetches the chunks that hold the rest. Starting with a fixed amount keeps the server from learning the list's length, and with it roughly the number of files.
-- **The version.** While version 2 bundles can exist, a reader of a bundle above 1 MiB first fetches its last 64 bytes to tell the versions apart (section 7). A version 2 bundle is read by its footer, its manifest and then its records.
 - **A file.** Its bytes lie in chunks `⌊start / 65,536⌋` to `⌊(start + size − 1) / 65,536⌋` (section 6). Readers fetch neighbouring chunks in one request, up to 16 MiB of plaintext, and when several files are wanted they fetch across gaps of less than 1 MiB rather than make another request. A reader may fetch only the files it is asked for; the others need not be read at all.
 
 The server sees which chunks are read, but not where one file ends and the next begins.
@@ -268,7 +200,7 @@ A reader opens the other side's bundle with the case's keys and expects the case
 
 The committed files hold small cases. CI generates fresh vectors on both sides at every run, including files of 0, 1, 65,535, 65,536, 65,537 and 4 MiB + 3 bytes, a file list long enough to span two chunks, and a note, and checks that each side reads and reproduces the other's.
 
-Bundles of version 2 stay readable from frozen files that are never regenerated: `go-vectors-unpadded.json` and `ts-vectors-unpadded.json` from before writers padded, and `go-vectors-v2.json` and `ts-vectors-v2.json` from before version 3. Their cases have `bundle_name` and no `prefix`. They go when version 2 reading goes. The two current files are regenerated with:
+The two committed files are regenerated with:
 
 ```bash
 cd ts && WRITE_VECTORS=../vectors/testdata pnpm vitest run test/vectors.test.ts
@@ -337,4 +269,4 @@ The relay is the server's (`/api/v1/transfers`: open, claim by nameplate, each l
 
 ## 12. Changing the format
 
-Bump what changes: `v2` in the envelope, the bundle's version (`stream:v3` in its AAD; the magic and version of a version 2 footer), the derivation prefix, the `v1` in the transfer's channel identifier and key labels. Keep reading the old form for as long as old secrets can exist: seven days, the longest lifetime, after the last writer stopped making it. What readers ignore needs no bump: an unknown field in the file list, or the spaces after the envelope's JSON. Change both implementations and both vector files, and update this document, in the same change.
+Bump what changes: `v2` in the envelope, the bundle's version (`stream:v3` in its AAD), the derivation prefix, the `v1` in the transfer's channel identifier and key labels. Keep reading the old form for as long as old secrets can exist: seven days, the longest lifetime, after the last writer stopped making it. What readers ignore needs no bump: an unknown field in the file list, or the spaces after the envelope's JSON. Change both implementations and both vector files, and update this document, in the same change.

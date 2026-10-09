@@ -23,7 +23,7 @@ export interface BundleFileInput {
   readonly size: number;
 }
 
-/** One file of a bundle as a reader sees it, in either version. */
+/** One file of a bundle as a reader sees it. */
 export interface BundleEntry {
   /** The file's position in the bundle. */
   readonly index: number;

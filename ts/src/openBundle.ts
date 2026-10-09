@@ -1,10 +1,6 @@
 import {
-  BUNDLE_FOOTER_LENGTH,
-  type BundleManifest,
   type BundleRangeFetcher,
-  decryptBundleFiles,
   MAX_BUNDLE_COALESCED_PLAINTEXT_BYTES,
-  readBundleManifest,
   SMALL_BUNDLE_CACHE_BYTES,
 } from "./bundle.js";
 import { BUNDLE_CHUNK_OVERHEAD_BYTES, BUNDLE_PREFIX_LENGTH, type KeySet } from "./encryption.js";
@@ -21,7 +17,6 @@ import {
  */
 export const BUNDLE_GAP_BYTES = 1024 * 1024;
 
-const V2_MAGIC = [0x53, 0x4c, 0x42, 0x4e, 0x44, 0x4c, 0x32, 0x00];
 const LIST_LENGTH_BYTES = 4;
 const MIN_LIST_BYTES = 2;
 /** The list is UTF-8 without a byte order mark: one makes it invalid JSON, as it does in Go. */
@@ -45,16 +40,12 @@ export interface DecryptedEntry {
   readonly blob: Blob;
 }
 
-/** An opened bundle of either version: its files, and what reading them takes. */
+/** An opened bundle: its files, and what reading them takes. */
 export interface OpenedBundle {
-  /** 3, or 2 for a bundle from before the stream. */
-  readonly version: 2 | 3;
   /** The files in bundle order. */
   readonly files: readonly BundleEntry[];
   /** The plaintext size of every file together. */
   readonly totalSize: number;
-  /** A version 2 bundle's manifest; undefined for version 3. */
-  readonly manifest?: BundleManifest;
   /**
    * Decrypts the files at these indices, all of them when indices is undefined, into one
    * Blob each, in bundle order. Neighbouring chunks are fetched in one request, also across
@@ -70,89 +61,27 @@ export interface OpenedBundle {
 }
 
 /**
- * Reads a bundle's file list, telling the versions apart by the last 64 bytes (FORMAT.md
- * section 7). A bundle of at most SMALL_BUNDLE_CACHE_BYTES is fetched whole, in one request
- * that serves everything after it. Of a larger one, the last 64 bytes are fetched, then for
- * version 3 the first SMALL_BUNDLE_CACHE_BYTES and, if the list goes on, the chunks that
- * hold the rest (section 8). The list is checked before the bundle is returned.
+ * Reads a bundle's file list (FORMAT.md sections 5 and 6). A bundle of at most
+ * SMALL_BUNDLE_CACHE_BYTES is fetched whole, in one request that serves everything after it.
+ * Of a larger one, the first SMALL_BUNDLE_CACHE_BYTES are fetched and, if the list goes on,
+ * the chunks that hold the rest (section 8). The list is checked before the bundle is
+ * returned. A size that cannot be a prefix and chunks is refused before anything is fetched.
  */
 export async function openBundle(
   fetchRange: BundleRangeFetcher,
   keySet: KeySet,
   size: number,
 ): Promise<OpenedBundle> {
-  if (
-    !Number.isSafeInteger(size) ||
-    size <= 0 ||
-    (size < BUNDLE_FOOTER_LENGTH && !validStreamSize(size))
-  ) {
+  if (!Number.isSafeInteger(size) || !validStreamSize(size)) {
     throw new Error("invalid bundle size");
   }
-  let whole: Uint8Array | undefined;
-  let fetch = fetchRange;
-  if (size <= SMALL_BUNDLE_CACHE_BYTES) {
-    const held = await fetchExact(fetchRange, 0, size);
-    whole = held;
-    fetch = async (start, end) => {
-      if (start < 0 || end >= held.length || end < start) {
-        throw new Error("bundle range size mismatch");
-      }
-      return held.subarray(start, end + 1);
-    };
-  }
-  if (size >= BUNDLE_FOOTER_LENGTH) {
-    const trailerStart = size - BUNDLE_FOOTER_LENGTH;
-    const trailer = whole
-      ? whole.subarray(trailerStart)
-      : await fetchExact(fetch, trailerStart, size);
-    if (V2_MAGIC.every((byte, i) => trailer[i] === byte)) {
-      return openVersion2(fetch, keySet, size, trailer);
-    }
-  }
-  return openStream(fetch, keySet, size, whole);
+  // A small bundle is fetched whole: then every chunk is in the head, and reading files makes
+  // no further request.
+  const head = await fetchExact(fetchRange, 0, Math.min(size, SMALL_BUNDLE_CACHE_BYTES));
+  return openStream(fetchRange, keySet, size, head);
 }
 
-async function openVersion2(
-  fetch: BundleRangeFetcher,
-  keySet: KeySet,
-  size: number,
-  trailer: Uint8Array,
-): Promise<OpenedBundle> {
-  // The footer has been fetched already; readBundleManifest gets it from here.
-  const remembering: BundleRangeFetcher = (start, end) =>
-    start === size - BUNDLE_FOOTER_LENGTH && end === size - 1
-      ? Promise.resolve(trailer.slice())
-      : fetch(start, end);
-  const { manifest } = await readBundleManifest(remembering, keySet, size);
-  const files = manifest.files.map(
-    (f): BundleEntry => ({ index: f.index, name: f.name, type: f.type, size: f.size }),
-  );
-  const decryptFiles = async (indices?: readonly number[], options: DecryptFilesOptions = {}) => {
-    const selected = selection(indices, files.length);
-    const totalBytes = selected.reduce((sum, i) => sum + files[i].size, 0);
-    const decrypted = await decryptBundleFiles(
-      selected.map((i) => manifest.files[i]),
-      keySet,
-      fetch,
-      {
-        maxCoalescedPlaintextBytes: options.maxCoalescedPlaintextBytes,
-        onProgress: ({ plaintextBytes }) =>
-          options.onProgress?.({ decryptedBytes: plaintextBytes, totalBytes }),
-      },
-    );
-    return decrypted.map(({ blob }, k) => ({ entry: files[selected[k]], blob }));
-  };
-  return {
-    version: 2,
-    files,
-    totalSize: totalOf(files),
-    manifest,
-    decryptFiles,
-    decryptFile: async (index, options) => (await decryptFiles([index], options))[0].blob,
-  };
-}
-
-/** The state of an opened version 3 bundle. */
+/** The state of an opened bundle. */
 interface Stream {
   readonly fetch: BundleRangeFetcher;
   readonly keySet: KeySet;
@@ -167,17 +96,15 @@ interface Stream {
   readonly headChunks: number;
 }
 
+/** Reads the file list from the head, the start of the bundle as it was fetched. */
 async function openStream(
   fetch: BundleRangeFetcher,
   keySet: KeySet,
   size: number,
-  whole: Uint8Array | undefined,
+  fetched: Uint8Array,
 ): Promise<OpenedBundle> {
-  if (!validStreamSize(size)) {
-    throw new Error("invalid bundle size");
-  }
   const chunks = Math.ceil((size - BUNDLE_PREFIX_LENGTH) / SEALED_BUNDLE_CHUNK_SIZE);
-  let head = whole ?? (await fetchExact(fetch, 0, SMALL_BUNDLE_CACHE_BYTES));
+  let head = fetched;
   const prefix = head.slice(0, BUNDLE_PREFIX_LENGTH);
   const completeChunks = (n: number) =>
     n >= size
@@ -230,7 +157,6 @@ async function openStream(
   const decryptFiles = (indices?: readonly number[], options: DecryptFilesOptions = {}) =>
     decryptStreamFiles(state, selection(indices, files.length), options);
   return {
-    version: 3,
     files,
     totalSize: totalOf(files),
     decryptFiles,

@@ -37,7 +37,7 @@ func TestOpenCoalescesChunksOfOneFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if b.Version != 3 || len(b.Files) != 1 || b.Files[0] != (Entry{Index: 0, Name: "big.bin", Type: "application/octet-stream", Size: twentyMiB}) {
+	if len(b.Files) != 1 || b.Files[0] != (Entry{Index: 0, Name: "big.bin", Type: "application/octet-stream", Size: twentyMiB}) {
 		t.Fatalf("opened %+v", b)
 	}
 	var out bytes.Buffer
@@ -49,11 +49,10 @@ func TestOpenCoalescesChunksOfOneFile(t *testing.T) {
 		t.Errorf("read %d bytes, progress %d", out.Len(), progress)
 	}
 	size := int64(len(data))
-	// The tail to tell the version, the first MiB, which holds 15 whole
-	// chunks, then the rest of the file's 321 chunks in requests of 256.
+	// The first MiB, which holds 15 whole chunks, then the rest of the
+	// file's 321 chunks in requests of 256.
 	last := plan.Chunks - 1
 	want := [][2]int64{
-		{size - 64, size - 1},
 		{0, SmallBundleBytes - 1},
 		{chunkStart(15), chunkStart(15+256) - 1},
 		{chunkStart(15 + 256), chunkEnd((twentyMiB+int64(len(plan.ListJSON))+3)/PieceSize, size) - 1},
@@ -99,7 +98,6 @@ func TestOpenReadsASelectionAcrossShortGaps(t *testing.T) {
 		t.Fatalf("gaps of %d and %d chunks", chunkOf(3)-chunkOf(1)-1, chunkOf(5)-chunkOf(3)-1)
 	}
 	want := [][2]int64{
-		{int64(len(data)) - 64, int64(len(data)) - 1},
 		{0, SmallBundleBytes - 1},
 		{chunkStart(chunkOf(1)), chunkStart(chunkOf(3)+1) - 1},
 		{chunkStart(chunkOf(5)), chunkStart(chunkOf(5)+1) - 1},
@@ -150,8 +148,8 @@ func TestManySmallFilesTakeFewRequests(t *testing.T) {
 			t.Fatalf("file %d: %d bytes", i, len(got[i]))
 		}
 	}
-	// The tail, the first MiB and the remaining ~3 MiB in one request.
-	if len(c.ranges) != 3 {
+	// The first MiB and the remaining ~3 MiB in one request.
+	if len(c.ranges) != 2 {
 		t.Errorf("%d requests: %v", len(c.ranges), c.ranges)
 	}
 }
@@ -174,7 +172,6 @@ func TestAListPastTheFirstMiB(t *testing.T) {
 	}
 	lastListChunk := int64(3+len(plan.ListJSON)) / PieceSize
 	want := [][2]int64{
-		{int64(len(data)) - 64, int64(len(data)) - 1},
 		{0, SmallBundleBytes - 1},
 		{SmallBundleBytes, chunkStart(lastListChunk+1) - 1},
 	}
@@ -201,82 +198,17 @@ func TestSmallBundlesAreOneRequest(t *testing.T) {
 	if len(plan.ListJSON) <= PieceSize || len(data) > SmallBundleBytes {
 		t.Fatalf("list of %d bytes, bundle of %d", len(plan.ListJSON), len(data))
 	}
-	ctx := context.Background()
-	for _, wrapped := range []bool{false, true} {
-		c := &counter{data: data}
-		fetch := RangeFetcher(c.fetch)
-		if wrapped {
-			var err error
-			if fetch, err = CachingFetcher(ctx, fetch, int64(len(data))); err != nil {
-				t.Fatal(err)
-			}
-		}
-		b, err := Open(ctx, fetch, ks, int64(len(data)))
-		if err != nil {
-			t.Fatal(err)
-		}
-		got := decryptAll(t, b, nil)
-		if string(got[1499]) != "1499" || len(got) != 1500 {
-			t.Errorf("last file = %q", got[1499])
-		}
-		if len(c.ranges) != 1 {
-			t.Errorf("caching fetcher %v: %d requests", wrapped, len(c.ranges))
-		}
+	c := &counter{data: data}
+	b, err := Open(context.Background(), c.fetch, ks, int64(len(data)))
+	if err != nil {
+		t.Fatal(err)
 	}
-}
-
-func TestOpenReadsVersion2Too(t *testing.T) {
-	ks := testKeys(t)
-	ctx := context.Background()
-	for _, sources := range [][]Source{
-		{memSource("notes.txt", "text/plain", []byte("hello")), memSource("empty", "", nil)},
-		{memSource("a", "", big()[:3]), memSource("big.bin", "", big())},
-	} {
-		plan, err := NewPlan(sources, "v2")
-		if err != nil {
-			t.Fatal(err)
-		}
-		data, err := Encrypt(plan, sources, ks)
-		if err != nil {
-			t.Fatal(err)
-		}
-		c := &counter{data: data}
-		b, err := Open(ctx, c.fetch, ks, int64(len(data)))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if b.Version != 2 || b.Manifest() == nil || b.Manifest().BundleName != "v2" || len(b.Files) != len(sources) {
-			t.Fatalf("opened %+v", b)
-		}
-		var progress int64
-		got := map[int][]byte{}
-		err = b.Decrypt(ctx, nil, func(e Entry) (io.WriteCloser, error) {
-			if e.Name != sources[e.Index].Name || e.Size != sources[e.Index].Size {
-				t.Errorf("entry %+v", e)
-			}
-			return &fileWriter{done: func(data []byte) { got[e.Index] = data }}, nil
-		}, func(n int64) { progress = n })
-		if err != nil {
-			t.Fatal(err)
-		}
-		for i, src := range sources {
-			if !bytes.Equal(got[i], contentOf(src)) {
-				t.Errorf("file %d: %d bytes", i, len(got[i]))
-			}
-		}
-		if progress != b.TotalSize() {
-			t.Errorf("progress %d of %d", progress, b.TotalSize())
-		}
-		// A small bundle in one request; a large one: footer, manifest, the
-		// small file's record, the big file in two groups. The footer is
-		// fetched once.
-		want := 1
-		if len(data) > SmallBundleBytes {
-			want = 5
-		}
-		if len(c.ranges) != want {
-			t.Errorf("%d bytes: %d requests, want %d: %v", len(data), len(c.ranges), want, c.ranges)
-		}
+	got := decryptAll(t, b, nil)
+	if string(got[1499]) != "1499" || len(got) != 1500 {
+		t.Errorf("last file = %q", got[1499])
+	}
+	if len(c.ranges) != 1 {
+		t.Errorf("%d requests: %v", len(c.ranges), c.ranges)
 	}
 }
 
@@ -348,7 +280,7 @@ func TestOpenRefusesImpossibleSizes(t *testing.T) {
 		if _, err := Open(context.Background(), c.fetch, ks, size); !errors.Is(err, ErrInvalidSize) {
 			t.Errorf("%d bytes: err = %v, want ErrInvalidSize", size, err)
 		}
-		if size < FooterLength && len(c.ranges) != 0 {
+		if len(c.ranges) != 0 {
 			t.Errorf("%d bytes: fetched %v before refusing", size, c.ranges)
 		}
 	}

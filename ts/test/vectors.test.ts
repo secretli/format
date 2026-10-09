@@ -6,7 +6,6 @@ import { hkdf } from "@noble/hashes/hkdf.js";
 import { sha512 } from "@noble/hashes/sha2.js";
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
 import { base64UrlDecode, base64UrlEncode } from "../src/base64";
-import { planBundle } from "../src/bundle";
 import {
   calculateGenerator,
   cpaceIsk,
@@ -30,12 +29,8 @@ import { parseCode, TRANSFER_WORDS, transferPassword } from "../src/transferWord
 /**
  * The Go implementation (keys, bundle, transfer) and this one must read each other's
  * output; FORMAT.md section 10 describes the vector files.
- * This side writes ts-vectors.json and reads go-vectors.json. Their cases are version 3
- * bundles with a fixed prefix, which each side must reproduce byte for byte.
- *
- * The *-v2.json and *-unpadded.json files hold version 2 bundles from before version 3 and
- * from before writers padded. They are never regenerated, so that readers keep reading
- * such bundles until version 2 goes.
+ * This side writes ts-vectors.json and reads go-vectors.json. Their cases are bundles with
+ * a fixed prefix, which each side must reproduce byte for byte.
  *
  * Regenerate the committed TypeScript vectors with
  *
@@ -68,13 +63,11 @@ interface VectorCase {
     blob_token: string;
     password_blob_token: string;
   };
-  /** Version 2 cases' meta also has bundle_name, which readers ignore. */
   meta: SecretMeta;
   encrypted_meta: string;
   files: VectorFile[];
-  /** A version 3 bundle's prefix; version 2 cases have none, but a bundle name. */
-  prefix?: string;
-  bundle_name?: string;
+  /** The bundle's prefix, which a writer given it reproduces exactly. */
+  prefix: string;
   /** The whole encrypted bundle, sealed with this case's blob keys. */
   bundle_base64: string;
 }
@@ -211,15 +204,12 @@ async function writeBundle(
   return out;
 }
 
-type Kind = "current" | "v2" | "v2-unpadded";
-
 /**
- * Reads the case's bundle and expects its files. A current case is then written again with
- * its prefix and must come out byte for byte the same, and its envelope must be padded as
- * FORMAT.md section 4 says. Of a padded version 2 case this side plans the same files and
- * expects the same size, so both version 2 writers pad alike.
+ * Reads the case's bundle and expects its files. The case is then written again with its
+ * prefix and must come out byte for byte the same, and its envelope must be padded as
+ * FORMAT.md section 4 says.
  */
-async function checkCase(c: VectorCase, kind: Kind) {
+async function checkCase(c: VectorCase) {
   const base = await KeySet.fromShareSecret(c.share_secret);
   const encoded = base.getEncoded();
   expect(encoded.publicID).toBe(c.derived.public_id);
@@ -237,7 +227,6 @@ async function checkCase(c: VectorCase, kind: Kind) {
   const bytes = fromBase64(c.bundle_base64);
   const fetchRange = async (start: number, end: number) => bytes.slice(start, end + 1);
   const opened = await openBundle(fetchRange, blob, bytes.length);
-  expect(opened.version).toBe(kind === "current" ? 3 : 2);
   expect(opened.files.map((f) => [f.name, f.type])).toEqual(c.files.map((f) => [f.name, f.type]));
   const decrypted = await opened.decryptFiles();
   for (const [i, { blob: content }] of decrypted.entries()) {
@@ -247,16 +236,7 @@ async function checkCase(c: VectorCase, kind: Kind) {
     expect(Buffer.from(got).equals(Buffer.from(want))).toBe(true);
   }
 
-  if (kind === "v2") {
-    // Planning reads only names, types and sizes.
-    const sized = c.files.map(
-      (f) => new File([new Uint8Array(contentOf(f).length)], f.name, { type: f.type }),
-    );
-    expect(bytes.length).toBe(planBundle(sized, c.bundle_name).totalSize);
-  }
-  if (kind !== "current") return;
-
-  const prefix = base64UrlDecode(c.prefix ?? "");
+  const prefix = base64UrlDecode(c.prefix);
   expect(prefix.length).toBe(16);
   const written = await writeBundle(c.files, blob, prefix);
   expect(written.length).toBe(bytes.length);
@@ -455,16 +435,14 @@ describe("cross-implementation vectors", () => {
     writeFileSync(path.join(dir, "ts-vectors.json"), `${JSON.stringify(vectors, null, 2)}\n`);
   });
 
-  const files: Array<[string, Kind]> = [[path.join(TESTDATA, "go-vectors.json"), "current"]];
+  const files = [path.join(TESTDATA, "go-vectors.json")];
   if (process.env.VECTORS_DIR) {
     const dir = path.resolve(process.env.VECTORS_DIR);
     for (const name of readdirSync(dir)) {
-      if (name.endsWith(".json")) files.push([path.join(dir, name), "current"]);
+      if (name.endsWith(".json")) files.push(path.join(dir, name));
     }
   }
-  files.push([path.join(TESTDATA, "go-vectors-v2.json"), "v2"]);
-  files.push([path.join(TESTDATA, "go-vectors-unpadded.json"), "v2-unpadded"]);
-  for (const [file, kind] of files) {
+  for (const file of files) {
     it(`reads what the other implementation wrote: ${path.basename(file)}`, LONG, async () => {
       if (!existsSync(file)) {
         throw new Error(`${file} is missing; see the comment at the top of this test`);
@@ -473,7 +451,7 @@ describe("cross-implementation vectors", () => {
       expect(v.cases.length).toBeGreaterThan(0);
       expect(v.transfer?.length ?? 0).toBeGreaterThan(0);
       for (const c of v.cases) {
-        await checkCase(c, kind);
+        await checkCase(c);
       }
       for (const c of v.transfer) {
         checkTransferCase(c);

@@ -49,7 +49,7 @@ var (
 	ErrSourceChanged = errors.New("file changed while it was read")
 )
 
-// Entry is one file of a bundle as a reader sees it, in either version.
+// Entry is one file of a bundle as a reader sees it.
 type Entry struct {
 	// Index is the file's position in the bundle.
 	Index int
