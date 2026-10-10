@@ -20,7 +20,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/secretli/format/cpace"
+	"github.com/secretli/format/go/cpace"
 	"golang.org/x/crypto/chacha20poly1305"
 )
 

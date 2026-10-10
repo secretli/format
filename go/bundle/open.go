@@ -11,7 +11,7 @@ import (
 	"slices"
 	"strconv"
 
-	"github.com/secretli/format/keys"
+	"github.com/secretli/format/go/keys"
 )
 
 // RangeFetcher reads the bundle bytes from start to end, both inclusive.

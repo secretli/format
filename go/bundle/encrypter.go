@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/secretli/format/keys"
+	"github.com/secretli/format/go/keys"
 )
 
 // Encrypter is a bundle as a byte stream: Read hands out the prefix and then

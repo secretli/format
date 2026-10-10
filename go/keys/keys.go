@@ -18,7 +18,7 @@ import (
 	"golang.org/x/crypto/chacha20poly1305"
 	"golang.org/x/crypto/scrypt"
 
-	"github.com/secretli/format/internal/padme"
+	"github.com/secretli/format/go/internal/padme"
 )
 
 const (

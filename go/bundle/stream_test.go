@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/secretli/format/keys"
+	"github.com/secretli/format/go/keys"
 )
 
 func fixedPrefix() []byte {

@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"unicode/utf8"
 
-	"github.com/secretli/format/keys"
+	"github.com/secretli/format/go/keys"
 )
 
 const (

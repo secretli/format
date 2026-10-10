@@ -144,7 +144,7 @@ The upload limit is 1 GiB of bundle. Planning needs no file contents, so clients
 
 ## 10. Interop vectors
 
-`vectors/testdata/ts-vectors.json` is written by the TypeScript implementation and read by the Go tests; `go-vectors.json` is written by Go and read by the TypeScript tests. Both hold a list of cases:
+`spec/vectors/ts-vectors.json` is written by the TypeScript implementation and read by the Go tests; `go-vectors.json` is written by Go and read by the TypeScript tests. Both hold a list of cases:
 
 ```json
 {
@@ -203,8 +203,8 @@ The committed files hold small cases. CI generates fresh vectors on both sides a
 The two committed files are regenerated with:
 
 ```bash
-cd ts && WRITE_VECTORS=../vectors/testdata pnpm vitest run test/vectors.test.ts
-go test ./vectors -run TestWritesGoVectors -args -write-vectors=testdata
+cd ts && WRITE_VECTORS=../spec/vectors pnpm vitest run test/vectors.test.ts
+go test ./go/vectors -run TestWritesGoVectors -args -write-vectors=../../spec/vectors
 ```
 
 ## 11. Handing a link over with a code

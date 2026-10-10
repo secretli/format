@@ -27,19 +27,19 @@ import {
 import { parseCode, TRANSFER_WORDS, transferPassword } from "../src/transferWords";
 
 /**
- * The Go implementation (keys, bundle, transfer) and this one must read each other's
- * output; FORMAT.md section 10 describes the vector files.
- * This side writes ts-vectors.json and reads go-vectors.json. Their cases are bundles with
- * a fixed prefix, which each side must reproduce byte for byte.
+ * The Go implementation (go/) and this one must read each other's output;
+ * spec/FORMAT.md section 10 describes the vector files, which are committed under
+ * spec/vectors. This side writes ts-vectors.json and reads go-vectors.json. Their cases
+ * are bundles with a fixed prefix, which each side must reproduce byte for byte.
  *
  * Regenerate the committed TypeScript vectors with
  *
- *   WRITE_VECTORS=../vectors/testdata pnpm vitest run test/vectors.test.ts
+ *   WRITE_VECTORS=../spec/vectors pnpm vitest run test/vectors.test.ts
  *
  * CI writes fresh, larger vectors on both sides at every run (VECTORS_BIG=1)
  * and reads the other side's from a temporary directory (VECTORS_DIR).
  */
-const TESTDATA = path.resolve(__dirname, "../../vectors/testdata");
+const TESTDATA = path.resolve(__dirname, "../../spec/vectors");
 
 interface Generated {
   seed: number;

@@ -19,21 +19,22 @@ import (
 
 	"golang.org/x/crypto/chacha20poly1305"
 
-	"github.com/secretli/format/bundle"
-	"github.com/secretli/format/cpace"
-	"github.com/secretli/format/keys"
-	"github.com/secretli/format/transfer"
+	"github.com/secretli/format/go/bundle"
+	"github.com/secretli/format/go/cpace"
+	"github.com/secretli/format/go/keys"
+	"github.com/secretli/format/go/transfer"
 )
 
 // The TypeScript implementation (ts/) and this one must read each other's
-// output; FORMAT.md section 10 describes the vector files.
-// testdata/ts-vectors.json is written by the TypeScript tests and read here;
-// testdata/go-vectors.json is written here and read there. Their cases are
-// bundles with a fixed prefix, which each side must reproduce byte for byte.
+// output; spec/FORMAT.md section 10 describes the vector files, which are
+// committed under spec/vectors. ts-vectors.json is written by the TypeScript
+// tests and read here; go-vectors.json is written here and read there. Their
+// cases are bundles with a fixed prefix, which each side must reproduce byte
+// for byte.
 //
 // Regenerate the committed Go vectors with
 //
-//	go test ./vectors -run TestWritesGoVectors -args -write-vectors=testdata
+//	go test ./go/vectors -run TestWritesGoVectors -args -write-vectors=../../spec/vectors
 //
 // CI writes fresh, larger vectors on both sides at every run (-big) and
 // reads the other side's from a temporary directory (-vectors-dir).
@@ -136,7 +137,7 @@ func (f vectorFile) content(t *testing.T) []byte {
 }
 
 func TestReadsVectors(t *testing.T) {
-	files := []string{filepath.Join("testdata", "ts-vectors.json")}
+	files := []string{filepath.Join("..", "..", "spec", "vectors", "ts-vectors.json")}
 	if *vectorsDir != "" {
 		more, err := filepath.Glob(filepath.Join(*vectorsDir, "*.json"))
 		if err != nil {
