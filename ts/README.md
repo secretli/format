@@ -11,7 +11,7 @@ A Go implementation of the same format lives in the same repository, and the two
 The package is not on a registry. Each [release](https://github.com/secretli/format/releases) carries it as an archive; depend on the archive's URL:
 
 ```bash
-pnpm add https://github.com/secretli/format/releases/download/v0.2.0/secretli-format-0.2.0.tgz
+pnpm add https://github.com/secretli/format/releases/download/v0.5.0/secretli-format-0.5.0.tgz
 ```
 
 It ships as ES modules with type declarations, for browsers and Node 20 or later.
