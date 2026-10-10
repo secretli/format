@@ -83,7 +83,7 @@ link, err := transfer.Receive(ctx, receiverRelay, transfer.Party{Words: code.Wor
 The package is not on any registry. Every release carries it as an archive, and a project depends on that archive's URL:
 
 ```bash
-pnpm add https://github.com/secretli/format/releases/download/v0.5.0/secretli-format-0.5.0.tgz
+pnpm add https://github.com/secretli/format/releases/download/v0.6.0/secretli-format-0.6.0.tgz
 ```
 
 From then on it is an ordinary dependency named `@secretli/format`: the lockfile pins the archive by its hash, the code imports it by name, and installs need no token. To move to a newer version, add the newer release's archive the same way. It ships as ES modules with type declarations, for browsers and Node 20 or later.
@@ -130,10 +130,10 @@ go test ./go/vectors -run TestWritesGoVectors -args -write-vectors=../../spec/ve
 
 ### Releasing
 
-A tag such as `v0.5.0` releases both implementations at that version. For Go the tag is the release: the Go module proxy serves it from this repository. For TypeScript the release workflow checks that `ts/package.json` carries the same version, packs `ts/`, signs the archive with a build attestation, and attaches it to the GitHub release. To check a downloaded archive:
+A tag such as `v0.6.0` releases both implementations at that version. For Go the tag is the release: the Go module proxy serves it from this repository. For TypeScript the release workflow checks that `ts/package.json` carries the same version, packs `ts/`, signs the archive with a build attestation, and attaches it to the GitHub release. To check a downloaded archive:
 
 ```bash
-gh attestation verify secretli-format-0.5.0.tgz --repo secretli/format
+gh attestation verify secretli-format-0.6.0.tgz --repo secretli/format
 ```
 
 Bump the version in `ts/package.json` in one commit, tag it, push the tag. Tags are permanent once the Go proxy has seen them: never move or delete one, release a new version instead.
