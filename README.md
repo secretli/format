@@ -2,12 +2,29 @@
 
 The encrypted format behind [Secretli](https://secretli.app): how a share secret becomes keys and tokens, how the metadata envelope and the bundle (one stream sealed in 64 KiB chunks) are laid out, what a link looks like, and how a link is handed to another device with a short code. Two implementations, one specification, and tests that hold them to each other.
 
-- **[FORMAT.md](FORMAT.md)** is the specification. Everything else follows it.
-- **Go**: `github.com/secretli/format` with the packages `keys`, `bundle`, `link`, and `transfer` with `cpace` for the short code.
+- **[spec/FORMAT.md](spec/FORMAT.md)** is the specification. Everything else follows it.
+- **Go**: the module `github.com/secretli/format`, whose packages live in `go/`: `keys`, `bundle`, `link`, and `transfer` with `cpace` for the short code.
 - **TypeScript**: the package `@secretli/format` in `ts/`, attached to every release as an archive.
-- **Vectors**: each implementation encrypts fixtures that the other one's tests must decrypt. The small ones are committed under `vectors/testdata`; CI regenerates large, multi-chunk ones on both sides at every run.
+- **Vectors**: each implementation encrypts fixtures that the other one's tests must decrypt. The small ones are committed under `spec/vectors`; CI regenerates large, multi-chunk ones on both sides at every run.
 
 The library is pure. It talks to no server, keeps no state, and has no dependencies beyond the crypto primitives (`golang.org/x/crypto` and `github.com/gtank/ristretto255`; `@noble/ciphers`, `@noble/curves` and `@noble/hashes`). What goes over the wire is the business of the clients that use it: the [web app](https://github.com/secretli/web) and the [command-line client](https://github.com/secretli/cli).
+
+## What's where
+
+The repository is split by what a change means for a release (see [Changes and releases](#changes-and-releases)):
+
+```
+spec/             the format
+  FORMAT.md         the specification
+  vectors/          the committed vectors both implementations must read and reproduce
+go/               the Go library (module github.com/secretli/format)
+  keys/ bundle/ link/ transfer/ cpace/ internal/padme/
+  vectors/          the Go side of the interop tests
+ts/               the TypeScript library (@secretli/format)
+  src/              what the archive ships, compiled to dist/
+  test/             its tests, including the TypeScript side of the interop tests
+.github/ go.mod go.sum .golangci.yml .nvmrc renovate.json   tooling and module metadata
+```
 
 ## Go
 
@@ -17,9 +34,9 @@ go get github.com/secretli/format
 
 ```go
 import (
-    "github.com/secretli/format/bundle"
-    "github.com/secretli/format/keys"
-    "github.com/secretli/format/link"
+    "github.com/secretli/format/go/bundle"
+    "github.com/secretli/format/go/keys"
+    "github.com/secretli/format/go/link"
 )
 
 // Making a secret: fresh keys, optionally with a password, then a bundle.
@@ -43,7 +60,7 @@ _ = b.DecryptFile(ctx, 0, os.Stdout, nil)                    // b.Decrypt reads 
 Handing a link over with a code runs over a relay you implement against the server's transfer API; `transfer` does the cryptography and the order of the legs:
 
 ```go
-import "github.com/secretli/format/transfer"
+import "github.com/secretli/format/go/transfer"
 
 // Sending: draw the words and the session id, open the transfer with the offer.
 words, _ := transfer.RandomWords()
@@ -90,16 +107,27 @@ The transfer has the same shape: `randomWords`, `createOffer`, `sendLink` and `f
 
 The snippets leave out error handling. The upload protocol (sessions, parts), the retrieval sessions and the transfer relay belong to the server's API, not to this library.
 
-## Changing the format
+## Changes and releases
 
-A change touches the specification, both implementations and both committed vector files in one pull request; CI's interop job fails otherwise. Readers keep accepting the previous form for as long as old secrets can exist. The TypeScript side builds with Node 24 and pnpm 12, the version `ts/package.json` pins. Regenerate the committed vectors with:
+Every change is one of three kinds, and the kind decides the release:
+
+- **The format** (`spec/`): rare and deliberate. One pull request changes the specification, both implementations and both committed vector files; CI's interop job fails otherwise. A committed vector that changes without the specification means an implementation's output changed, which is a break. Readers keep accepting the previous form for as long as old secrets can exist, and the clients ship the reader before anything writes the new form. Released as a minor version while below 1.0, as a major one from then on.
+- **The libraries** (the code in `go/` and `ts/src/`, and the runtime dependencies: the `require` lines in `go.mod`, `dependencies` in `ts/package.json`):
+  - a fix in our own code is released right away, as a patch version;
+  - new or changed API is released as a minor version;
+  - a change nobody can observe, such as a refactoring, goes out with the next release.
+  
+  Dependency updates need no release of their own. The command-line client's `go.mod` and the web app's lockfile choose the versions they install, so they take a fixed `golang.org/x/crypto` or `@noble/*` themselves. Release only to raise the lowest version this library accepts.
+- **Tooling** (everything else: tests, CI, lint and Renovate configuration, development dependencies): no release. The TypeScript compiler is tooling too, but it builds the `dist/` the archive ships, so a new compiler reaches the clients with the next release; CI checks that the packed archive works in plain Node.
+
+The TypeScript side builds with Node 24 and pnpm 12, the version `ts/package.json` pins. Regenerate the committed vectors with:
 
 ```bash
-cd ts && WRITE_VECTORS=../vectors/testdata pnpm vitest run test/vectors.test.ts
-go test ./vectors -run TestWritesGoVectors -args -write-vectors=testdata
+cd ts && WRITE_VECTORS=../spec/vectors pnpm vitest run test/vectors.test.ts
+go test ./go/vectors -run TestWritesGoVectors -args -write-vectors=../../spec/vectors
 ```
 
-## Releases
+### Releasing
 
 A tag such as `v0.5.0` releases both implementations at that version. For Go the tag is the release: the Go module proxy serves it from this repository. For TypeScript the release workflow checks that `ts/package.json` carries the same version, packs `ts/`, signs the archive with a build attestation, and attaches it to the GitHub release. To check a downloaded archive:
 
