@@ -23,7 +23,8 @@ go/               the Go library (module github.com/secretli/format)
 ts/               the TypeScript library (@secretli/format)
   src/              what the archive ships, compiled to dist/
   test/             its tests, including the TypeScript side of the interop tests
-.github/ go.mod go.sum .golangci.yml .nvmrc renovate.json   tooling and module metadata
+go.mod go.sum     the Go module; its require lines are the library's runtime dependencies
+.github/ .golangci.yml .nvmrc renovate.json   tooling
 ```
 
 ## Go
