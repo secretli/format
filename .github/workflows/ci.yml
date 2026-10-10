@@ -38,7 +38,7 @@ jobs:
           # Anything whose first path element has a dot is a module, not the
           # standard library; only x/crypto (and its x/sys) and ristretto255
           # (and its edwards25519) are allowed.
-          deps=$(go list -deps ./keys ./bundle ./link ./cpace ./transfer | grep -E '^[^/]*\.' | grep -v -E '^(github\.com/secretli/format/|golang\.org/x/crypto/|golang\.org/x/sys/|github\.com/gtank/ristretto255$|filippo\.io/edwards25519(/|$))' || true)
+          deps=$(go list -deps ./go/keys ./go/bundle ./go/link ./go/cpace ./go/transfer | grep -E '^[^/]*\.' | grep -v -E '^(github\.com/secretli/format/|golang\.org/x/crypto/|golang\.org/x/sys/|github\.com/gtank/ristretto255$|filippo\.io/edwards25519(/|$))' || true)
           if [ -n "$deps" ]; then
             echo "unexpected dependencies:"
             echo "$deps"
@@ -95,7 +95,7 @@ jobs:
           "
 
   # Each implementation writes fresh vectors, including multi-chunk files,
-  # and the other one must read them. FORMAT.md section 10.
+  # and the other one must read them. spec/FORMAT.md section 10.
   interop:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -125,5 +125,5 @@ jobs:
         working-directory: ts
         run: |
           WRITE_VECTORS="$RUNNER_TEMP/vectors-ts" VECTORS_BIG=1 pnpm exec vitest run test/vectors.test.ts
-          (cd .. && go test ./vectors -run 'TestWritesGoVectors|TestReadsVectors' -args -write-vectors="$RUNNER_TEMP/vectors-go" -big -vectors-dir="$RUNNER_TEMP/vectors-ts")
+          (cd .. && go test ./go/vectors -run 'TestWritesGoVectors|TestReadsVectors' -args -write-vectors="$RUNNER_TEMP/vectors-go" -big -vectors-dir="$RUNNER_TEMP/vectors-ts")
           VECTORS_DIR="$RUNNER_TEMP/vectors-go" pnpm exec vitest run test/vectors.test.ts

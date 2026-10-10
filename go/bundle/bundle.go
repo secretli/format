@@ -12,7 +12,7 @@ import (
 	"errors"
 	"io"
 
-	"github.com/secretli/format/internal/padme"
+	"github.com/secretli/format/go/internal/padme"
 )
 
 const (

@@ -7,7 +7,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/secretli/format/keys"
+	"github.com/secretli/format/go/keys"
 )
 
 const twentyMiB = 20 * 1024 * 1024

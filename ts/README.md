@@ -4,7 +4,7 @@ The encrypted format behind [Secretli](https://secretli.app), in TypeScript: der
 
 The package is pure. It talks to no server and keeps no state; encryption and decryption happen wherever the key is. Its only dependencies are [`@noble/ciphers`](https://github.com/paulmillr/noble-ciphers), [`@noble/curves`](https://github.com/paulmillr/noble-curves) and [`@noble/hashes`](https://github.com/paulmillr/noble-hashes).
 
-A Go implementation of the same format lives in the same repository, and the two are held to each other by vectors that each side encrypts and the other must decrypt. The specification both follow is [FORMAT.md](https://github.com/secretli/format/blob/main/FORMAT.md).
+A Go implementation of the same format lives in the same repository, and the two are held to each other by vectors that each side encrypts and the other must decrypt. The specification both follow is [FORMAT.md](https://github.com/secretli/format/blob/main/spec/FORMAT.md).
 
 ## Install
 
