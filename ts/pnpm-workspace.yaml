@@ -1,0 +1,7 @@
+# Settings for pnpm 12, the version package.json pins.
+
+# pnpm refuses versions published less than a day ago (minimumReleaseAge).
+# @types/node 24.19.2 was locked before that applied here; the entry is moot
+# from 2026-10-10 18:45 UTC on and can go with the next @types/node update.
+minimumReleaseAgeExclude:
+  - "@types/node@24.19.2"

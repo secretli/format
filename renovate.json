@@ -2,5 +2,13 @@
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
     "config:recommended"
+  ],
+  "packageRules": [
+    {
+      "description": "pnpm refuses npm versions less than a day old (minimumReleaseAge), so Renovate waits as long before it proposes one; otherwise its pull requests fail to install.",
+      "matchDatasources": ["npm"],
+      "minimumReleaseAge": "1 day",
+      "internalChecksFilter": "strict"
+    }
   ]
 }
