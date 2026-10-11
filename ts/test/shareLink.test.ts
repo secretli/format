@@ -100,6 +100,14 @@ describe("parseShareLink", () => {
     expect(parseShareLink(text, ORIGIN)).toEqual({ kind: "invalid" });
   });
 
+  it("reads long runs of white space in linear time", () => {
+    const run = " \t".repeat(500_000);
+    const started = performance.now();
+    expect(readShareLink(`x${run}x`)).toBeUndefined();
+    expect(readShareLink(`${run}${ORIGIN}/s#${SECRET}${run}`)?.secret).toBe(SECRET);
+    expect(performance.now() - started).toBeLessThan(1000);
+  });
+
   it("rejects a malformed link for another origin without naming its host", () => {
     expect(parseShareLink("https://phish.example/login", ORIGIN)).toEqual({ kind: "invalid" });
   });

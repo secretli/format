@@ -29,7 +29,7 @@ export interface ShareLink {
  * parser it normalises nothing it would then have to trust.
  */
 export function readShareLink(text: string): ShareLink | undefined {
-  const m = SHARE_LINK.exec(text.replace(/^[ \t\r\n]+|[ \t\r\n]+$/g, ""));
+  const m = SHARE_LINK.exec(trimLink(text));
   if (!m) {
     return undefined;
   }
@@ -83,6 +83,23 @@ export function parseShareLink(text: string, origin: string): ShareLinkResult {
   const fragment =
     link.deletionToken === undefined ? link.secret : `${link.secret}!${link.deletionToken}`;
   return { kind: "share", fragment };
+}
+
+/**
+ * The text without spaces, tabs and line breaks around it. A loop, not a regular expression:
+ * /[ \t\r\n]+$/ takes quadratic time on a long run of them that doesn't end the text.
+ */
+function trimLink(text: string): string {
+  const around = " \t\r\n";
+  let start = 0;
+  let end = text.length;
+  while (start < end && around.includes(text[start])) {
+    start++;
+  }
+  while (end > start && around.includes(text[end - 1])) {
+    end--;
+  }
+  return text.slice(start, end);
 }
 
 /** localhost, 127.0.0.0/8 as four decimal numbers without leading zeros, or ::1. */
