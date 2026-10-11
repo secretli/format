@@ -55,12 +55,6 @@ export interface StreamPlan {
 }
 
 export interface EncryptStreamOptions {
-  /**
-   * The bundle's prefix instead of a freshly drawn one. With it fixed nothing in a bundle
-   * is random, which the vectors need (FORMAT.md section 10). Leave it unset otherwise:
-   * the same prefix for two bundles under the same keys breaks the encryption.
-   */
-  readonly prefix?: Uint8Array;
   /** How much of a file is read at once; BUNDLE_READ_BYTES unless set. */
   readonly readBytes?: number;
 }
@@ -145,10 +139,26 @@ export async function* encryptStream(
   keySet: KeySet,
   options: EncryptStreamOptions = {},
 ): AsyncGenerator<Uint8Array> {
+  const prefix = crypto.getRandomValues(new Uint8Array(BUNDLE_PREFIX_LENGTH));
+  yield* encryptStreamWithPrefix(plan, files, keySet, prefix, options);
+}
+
+/**
+ * encryptStream with the prefix given instead of drawn. With it fixed nothing in a bundle is
+ * random, which the vectors need (FORMAT.md section 10); the same prefix for two bundles
+ * under the same keys breaks the encryption. Not part of the package's API: index.ts leaves
+ * it out, and only the tests import it from here.
+ */
+export async function* encryptStreamWithPrefix(
+  plan: StreamPlan,
+  files: readonly Blob[],
+  keySet: KeySet,
+  prefix: Uint8Array,
+  options: EncryptStreamOptions = {},
+): AsyncGenerator<Uint8Array> {
   if (files.length !== plan.files.length || files.some((f, i) => f.size !== plan.files[i].size)) {
     throw new Error("bundle files do not match the plan");
   }
-  const prefix = options.prefix ?? crypto.getRandomValues(new Uint8Array(BUNDLE_PREFIX_LENGTH));
   if (prefix.length !== BUNDLE_PREFIX_LENGTH) {
     throw new Error("bundle prefix must be 16 bytes");
   }
@@ -226,6 +236,11 @@ async function* streamContent(
       }
       yield bytes;
     }
+    // A file that grew since it was planned would otherwise ship cut short: the slices above
+    // never look past the planned end (FORMAT.md section 9).
+    if ((await file.slice(size, size + 1).arrayBuffer()).byteLength !== 0) {
+      throw new Error("bundle file changed during encryption");
+    }
   }
 }
 
@@ -262,17 +277,31 @@ export async function* cutIntoParts(
 }
 
 /**
- * Builds a whole bundle in memory, with a fresh prefix unless the options fix one. Uploads
- * stream encryptStream in parts instead; this is for small bundles and tests.
+ * Builds a whole bundle in memory, with a fresh prefix. Uploads stream encryptStream in parts
+ * instead; this is for small bundles and tests.
  */
 export async function createStreamBundle(
   files: readonly File[],
   keySet: KeySet,
   options: EncryptStreamOptions = {},
 ): Promise<{ blob: Blob; plan: StreamPlan }> {
+  const prefix = crypto.getRandomValues(new Uint8Array(BUNDLE_PREFIX_LENGTH));
+  return createStreamBundleWithPrefix(files, keySet, prefix, options);
+}
+
+/**
+ * createStreamBundle with the prefix given, for the vectors. Not part of the package's API,
+ * like encryptStreamWithPrefix.
+ */
+export async function createStreamBundleWithPrefix(
+  files: readonly File[],
+  keySet: KeySet,
+  prefix: Uint8Array,
+  options: EncryptStreamOptions = {},
+): Promise<{ blob: Blob; plan: StreamPlan }> {
   const plan = planStream(files);
   const parts: ArrayBuffer[] = [];
-  for await (const bytes of encryptStream(plan, files, keySet, options)) {
+  for await (const bytes of encryptStreamWithPrefix(plan, files, keySet, prefix, options)) {
     parts.push(toArrayBuffer(bytes));
   }
   const blob = new Blob(parts, { type: "application/octet-stream" });

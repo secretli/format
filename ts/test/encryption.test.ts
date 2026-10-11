@@ -241,17 +241,27 @@ describe("KeySet", () => {
   describe("envelope padding", () => {
     const shareSecret = base64UrlEncode(Uint8Array.from({ length: 32 }, (_, i) => i));
 
-    /** Opens an envelope with keys derived here, apart from KeySet: the plaintext, padding included. */
-    function openEnvelope(envelope: string): Uint8Array {
+    /** The envelope's cipher with keys derived here, apart from KeySet. */
+    function metaCipher(nonce: Uint8Array) {
       const secret = base64UrlDecode(shareSecret);
       const label = (name: string) => new TextEncoder().encode(`secretli:derivation:v1:${name}`);
       const metaKey = hkdf(sha512, secret, undefined, label("meta_key"), 32);
       const publicID = hkdf(sha512, secret, undefined, label("public_id"), 16);
       const aad = new Uint8Array([...publicID, ...new TextEncoder().encode("meta")]);
+      return xchacha20poly1305(metaKey, nonce, aad);
+    }
+
+    /** Opens an envelope: the plaintext, padding included. */
+    function openEnvelope(envelope: string): Uint8Array {
       const [, nonce, ciphertext] = envelope.split("$");
-      return xchacha20poly1305(metaKey, base64UrlDecode(nonce), aad).decrypt(
-        base64UrlDecode(ciphertext),
-      );
+      return metaCipher(base64UrlDecode(nonce)).decrypt(base64UrlDecode(ciphertext));
+    }
+
+    /** Seals any plaintext as an envelope, as a writer that broke the format would. */
+    function sealEnvelope(plaintext: string | Uint8Array): string {
+      const bytes = typeof plaintext === "string" ? new TextEncoder().encode(plaintext) : plaintext;
+      const nonce = Uint8Array.from({ length: 24 }, (_, i) => i);
+      return `v2$${base64UrlEncode(nonce)}$${base64UrlEncode(metaCipher(nonce).encrypt(bytes))}`;
     }
 
     it("pads every ordinary envelope to 740 characters", async () => {
@@ -293,7 +303,8 @@ describe("KeySet", () => {
         const envelope = await ks.encryptMeta(meta as unknown as SecretMeta);
         expect(openEnvelope(envelope).length).toBe(plaintext);
         expect(envelope.length).toBe(characters);
-        await expect(ks.decryptMeta(envelope)).resolves.toEqual(meta);
+        // A type no reader knows: the envelope is written, but not opened.
+        await expect(ks.decryptMeta(envelope)).rejects.toThrow("invalid metadata envelope");
       }
     });
 
@@ -308,6 +319,72 @@ describe("KeySet", () => {
         "v2$Gbc53Ya5NjqescrUcUjlQyNNXAwRb9Hv$yXIUTdkte_qyeIdL5CN_DFfIngBMB-VoWLgYfDgYSJ6qxsPKqOZSe034Bb8anvoGpbPOAdHvFlqSae2O_fnilbrUYRp9A471Cb5PO25p3NjbtiRO9A",
       );
       expect(text).toMatchObject({ type: "text", password_protected: false });
+    });
+
+    it("opens only JSON of the envelope's shape", async () => {
+      const ks = await KeySet.fromShareSecret(shareSecret);
+      for (const [plaintext, meta] of [
+        ['{"type":"text","password_protected":false}', { type: "text", password_protected: false }],
+        [
+          '{"type":"bundle","password_protected":true}   ',
+          { type: "bundle", password_protected: true },
+        ],
+        [
+          '{"password_protected":false,"type":"text","bundle_name":"x","new":[1]}',
+          { type: "text", password_protected: false },
+        ],
+        [
+          '{"type":"text","type":"bundle","password_protected":false}',
+          { type: "bundle", password_protected: false },
+        ],
+      ] as const) {
+        await expect(ks.decryptMeta(sealEnvelope(plaintext))).resolves.toEqual(meta);
+      }
+      for (const plaintext of [
+        "null",
+        "[]",
+        '"text"',
+        "{}",
+        '{"type":"text"}',
+        '{"password_protected":false}',
+        '{"type":"note","password_protected":false}',
+        '{"type":null,"password_protected":false}',
+        '{"type":1,"password_protected":false}',
+        '{"TYPE":"text","password_protected":false}',
+        '{"type":"text","Password_Protected":false}',
+        '{"type":"text","password_protected":"no"}',
+        '{"type":"text","password_protected":0}',
+        '{"type":"text","password_protected":null}',
+        '{"__proto__":{"type":"text","password_protected":false}}',
+        '\ufeff{"type":"text","password_protected":false}',
+        new Uint8Array([
+          ...new TextEncoder().encode('{"type":"text","password_protected":false,"x":"'),
+          0xff,
+          ...new TextEncoder().encode('"}'),
+        ]),
+      ]) {
+        await expect(ks.decryptMeta(sealEnvelope(plaintext))).rejects.toThrow(
+          "invalid metadata envelope",
+        );
+      }
+    });
+
+    it("refuses an envelope whose base64url is not canonical", async () => {
+      const ks = await KeySet.fromShareSecret(shareSecret);
+      const envelope = sealEnvelope('{"type":"text","password_protected":false}');
+      const [version, nonce, ciphertext] = envelope.split("$");
+      await expect(ks.decryptMeta(envelope)).resolves.toBeTruthy();
+      // 58 bytes of ciphertext leave four unused bits in the last character.
+      const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+      const spareBit = alphabet[alphabet.indexOf(ciphertext.slice(-1)) | 1];
+      for (const broken of [
+        `${version}$${nonce}=$${ciphertext}`,
+        `${version}$${nonce}$${ciphertext} `,
+        `${version}$${nonce}$+${ciphertext.slice(1)}`,
+        `${version}$${nonce}$${ciphertext.slice(0, -1)}${spareBit}`,
+      ]) {
+        await expect(ks.decryptMeta(broken)).rejects.toThrow("invalid metadata envelope format");
+      }
     });
   });
 

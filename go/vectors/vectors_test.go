@@ -21,6 +21,7 @@ import (
 
 	"github.com/secretli/format/go/bundle"
 	"github.com/secretli/format/go/cpace"
+	"github.com/secretli/format/go/internal/fixedprefix"
 	"github.com/secretli/format/go/keys"
 	"github.com/secretli/format/go/transfer"
 )
@@ -43,6 +44,12 @@ var (
 	bigVectors   = flag.Bool("big", false, "include large and many-file cases in the written vectors")
 	vectorsDir   = flag.String("vectors-dir", "", "a directory of additional *.json vector files to read")
 )
+
+// newEncrypterWithPrefix is package bundle's encrypter with a fixed prefix,
+// which only these tests may use (package fixedprefix).
+func newEncrypterWithPrefix(plan *bundle.StreamPlan, sources []bundle.Source, ks *keys.KeySet, prefix []byte) (*bundle.Encrypter, error) {
+	return fixedprefix.NewEncrypter.(func(*bundle.StreamPlan, []bundle.Source, *keys.KeySet, []byte) (*bundle.Encrypter, error))(plan, sources, ks, prefix)
+}
 
 type generated struct {
 	Seed   uint32 `json:"seed"`
@@ -254,7 +261,7 @@ func checkCase(t *testing.T, c vectorCase) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	enc, err := bundle.NewEncrypterWithPrefix(plan, sources, blob, prefix)
+	enc, err := newEncrypterWithPrefix(plan, sources, blob, prefix)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -458,7 +465,7 @@ func makeCase(t *testing.T, name string, secretByte byte, password, metaType str
 	if err != nil {
 		t.Fatal(err)
 	}
-	encrypter, err := bundle.NewEncrypterWithPrefix(plan, sources, blob, prefix)
+	encrypter, err := newEncrypterWithPrefix(plan, sources, blob, prefix)
 	if err != nil {
 		t.Fatal(err)
 	}

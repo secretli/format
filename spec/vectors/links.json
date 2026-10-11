@@ -1,0 +1,386 @@
+{
+  "description": "Links and what a reader must make of them (FORMAT.md section 3). An accepted link gives origin, secret and deletion_token (empty for a recipient link); a refused one is refused with the reason in why, for people only.",
+  "cases": [
+    {
+      "input": "https://secretli.app/s#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "origin": "https://secretli.app",
+      "secret": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "deletion_token": ""
+    },
+    {
+      "input": "https://secretli.app/s#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA!BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBA",
+      "origin": "https://secretli.app",
+      "secret": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "deletion_token": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBA"
+    },
+    {
+      "input": "  https://secretli.app/s#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n",
+      "origin": "https://secretli.app",
+      "secret": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "deletion_token": ""
+    },
+    {
+      "input": "\thttps://secretli.app/s#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\r\n",
+      "origin": "https://secretli.app",
+      "secret": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "deletion_token": ""
+    },
+    {
+      "input": "https://Secretli.APP/s#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "origin": "https://secretli.app",
+      "secret": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "deletion_token": ""
+    },
+    {
+      "input": "https://secretli.app:443/s#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "origin": "https://secretli.app",
+      "secret": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "deletion_token": ""
+    },
+    {
+      "input": "https://secretli.app:0443/s#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "origin": "https://secretli.app",
+      "secret": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "deletion_token": ""
+    },
+    {
+      "input": "https://secretli.app:8443/s#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "origin": "https://secretli.app:8443",
+      "secret": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "deletion_token": ""
+    },
+    {
+      "input": "https://secretli.k.patrickscheid.de/s#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "origin": "https://secretli.k.patrickscheid.de",
+      "secret": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "deletion_token": ""
+    },
+    {
+      "input": "https://xn--bcher-kva.example/s#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "origin": "https://xn--bcher-kva.example",
+      "secret": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "deletion_token": ""
+    },
+    {
+      "input": "https://[2001:DB8::1]/s#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "origin": "https://[2001:db8::1]",
+      "secret": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "deletion_token": ""
+    },
+    {
+      "input": "https://[2001:db8:0:0:0:0:0:1]:8443/s#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "origin": "https://[2001:db8::1]:8443",
+      "secret": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "deletion_token": ""
+    },
+    {
+      "input": "https://[1:0:0:2:0:0:0:3]/s#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "origin": "https://[1:0:0:2::3]",
+      "secret": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "deletion_token": ""
+    },
+    {
+      "input": "https://[1:0:0:2:0:0:3:4]/s#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "origin": "https://[1::2:0:0:3:4]",
+      "secret": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "deletion_token": ""
+    },
+    {
+      "input": "https://[1:2:3:4:5:6:7:0]/s#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "origin": "https://[1:2:3:4:5:6:7:0]",
+      "secret": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "deletion_token": ""
+    },
+    {
+      "input": "https://[1:2:3:4:5:6:7::]/s#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "origin": "https://[1:2:3:4:5:6:7:0]",
+      "secret": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "deletion_token": ""
+    },
+    {
+      "input": "https://[0001:0DB8::00ff]/s#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "origin": "https://[1:db8::ff]",
+      "secret": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "deletion_token": ""
+    },
+    {
+      "input": "https://[::]/s#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "origin": "https://[::]",
+      "secret": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "deletion_token": ""
+    },
+    {
+      "input": "http://localhost:8080/s#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "origin": "http://localhost:8080",
+      "secret": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "deletion_token": ""
+    },
+    {
+      "input": "http://LOCALHOST:8080/s#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "origin": "http://localhost:8080",
+      "secret": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "deletion_token": ""
+    },
+    {
+      "input": "http://localhost:80/s#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "origin": "http://localhost",
+      "secret": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "deletion_token": ""
+    },
+    {
+      "input": "http://127.0.0.1/s#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "origin": "http://127.0.0.1",
+      "secret": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "deletion_token": ""
+    },
+    {
+      "input": "http://127.1.2.3:5173/s#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "origin": "http://127.1.2.3:5173",
+      "secret": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "deletion_token": ""
+    },
+    {
+      "input": "http://[::1]:8080/s#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "origin": "http://[::1]:8080",
+      "secret": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "deletion_token": ""
+    },
+    {
+      "input": "http://[0:0:0:0:0:0:0:1]/s#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "origin": "http://[::1]",
+      "secret": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "deletion_token": ""
+    },
+    {
+      "input": "https://secretli.app/s#-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_E",
+      "origin": "https://secretli.app",
+      "secret": "-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_E",
+      "deletion_token": ""
+    },
+    {
+      "input": "http://secretli.app/s#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "refused": true,
+      "why": "http for a host that is not loopback"
+    },
+    {
+      "input": "http://192.168.1.2/s#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "refused": true,
+      "why": "http for a private, not loopback, address"
+    },
+    {
+      "input": "http://localhost.example.com/s#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "refused": true,
+      "why": "not localhost"
+    },
+    {
+      "input": "http://127.000.0.1/s#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "refused": true,
+      "why": "leading zeros in a loopback address"
+    },
+    {
+      "input": "http://127.1/s#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "refused": true,
+      "why": "not four numbers"
+    },
+    {
+      "input": "http://[::ffff:7f00:1]/s#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "refused": true,
+      "why": "IPv4-mapped IPv6"
+    },
+    {
+      "input": "HTTPS://secretli.app/s#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "refused": true,
+      "why": "scheme in capitals"
+    },
+    {
+      "input": "ftp://secretli.app/s#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "refused": true,
+      "why": "another scheme"
+    },
+    {
+      "input": "javascript:alert(1)",
+      "refused": true,
+      "why": "not a link"
+    },
+    {
+      "input": "",
+      "refused": true,
+      "why": "empty"
+    },
+    {
+      "input": "https:///s#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "refused": true,
+      "why": "no host"
+    },
+    {
+      "input": "https://user@secretli.app/s#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "refused": true,
+      "why": "user info"
+    },
+    {
+      "input": "https://user:pw@secretli.app/s#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "refused": true,
+      "why": "user info"
+    },
+    {
+      "input": "https://secretli.app/s?x=1#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "refused": true,
+      "why": "a query"
+    },
+    {
+      "input": "https://secretli.app/s/#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "refused": true,
+      "why": "another path"
+    },
+    {
+      "input": "https://secretli.app/x#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "refused": true,
+      "why": "another path"
+    },
+    {
+      "input": "https://secretli.app/S#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "refused": true,
+      "why": "another path"
+    },
+    {
+      "input": "https://secretli.app/%73#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "refused": true,
+      "why": "percent-encoded path"
+    },
+    {
+      "input": "https://secretli.app/x/../s#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "refused": true,
+      "why": "dot segments"
+    },
+    {
+      "input": "https://secretli.app\\s#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "refused": true,
+      "why": "backslash"
+    },
+    {
+      "input": "https://secretli.app/s#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA%41A",
+      "refused": true,
+      "why": "percent-encoded fragment"
+    },
+    {
+      "input": "https://secretli.app/s#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA%21BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBA",
+      "refused": true,
+      "why": "percent-encoded separator"
+    },
+    {
+      "input": "https://secretli.app/s#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA!",
+      "refused": true,
+      "why": "separator without a token"
+    },
+    {
+      "input": "https://secretli.app/s#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "refused": true,
+      "why": "42 characters"
+    },
+    {
+      "input": "https://secretli.app/s#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "refused": true,
+      "why": "44 characters"
+    },
+    {
+      "input": "https://secretli.app/s#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA!BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+      "refused": true,
+      "why": "token of 42 characters"
+    },
+    {
+      "input": "https://secretli.app/s#+AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "refused": true,
+      "why": "a character outside base64url"
+    },
+    {
+      "input": "https://secretli.app/s#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "refused": true,
+      "why": "a second fragment"
+    },
+    {
+      "input": "https://secretli.app/s#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\nextra",
+      "refused": true,
+      "why": "a line break inside"
+    },
+    {
+      "input": "https://secretli.app/s# AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "refused": true,
+      "why": "a space inside"
+    },
+    {
+      "input": "https://secret li.app/s#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "refused": true,
+      "why": "a space in the host"
+    },
+    {
+      "input": "https://b\u00fccher.example/s#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "refused": true,
+      "why": "a host that is not ASCII"
+    },
+    {
+      "input": "https://secretli.app:99999/s#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "refused": true,
+      "why": "port above 65535"
+    },
+    {
+      "input": "https://secretli.app:/s#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "refused": true,
+      "why": "empty port"
+    },
+    {
+      "input": "https://[1:2]/s#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "refused": true,
+      "why": "not an IPv6 address"
+    },
+    {
+      "input": "https://[::1/s#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "refused": true,
+      "why": "unclosed bracket"
+    },
+    {
+      "input": "https://[::ffff:1.2.3.4]/s#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "refused": true,
+      "why": "IPv4 inside brackets"
+    },
+    {
+      "input": "https://[1:2:3:4:5:6:7:8::]/s#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "refused": true,
+      "why": "\"::\" standing for no group"
+    },
+    {
+      "input": "https://[1::2::3]/s#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "refused": true,
+      "why": "two \"::\""
+    },
+    {
+      "input": "https://[00001::]/s#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "refused": true,
+      "why": "a group of five digits"
+    },
+    {
+      "input": "https://[:1::]/s#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "refused": true,
+      "why": "a single leading colon"
+    },
+    {
+      "input": "https://[1:2:3:4:5:6:7]/s#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "refused": true,
+      "why": "seven groups"
+    },
+    {
+      "input": "https://[::ffff:0:1]/s#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "refused": true,
+      "why": "IPv4-mapped IPv6 in hex"
+    },
+    {
+      "input": "\ufeffhttps://secretli.app/s#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "refused": true,
+      "why": "byte order mark is not trimmed"
+    },
+    {
+      "input": "https://secretli.app/s#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\u00a0",
+      "refused": true,
+      "why": "no-break space is not trimmed"
+    }
+  ]
+}

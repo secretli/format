@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"golang.org/x/crypto/chacha20poly1305"
 	"golang.org/x/crypto/scrypt"
@@ -207,7 +208,7 @@ func (k *KeySet) DecryptMeta(envelope string) (Meta, error) {
 	if err != nil {
 		return Meta{}, ErrInvalidEnvelope
 	}
-	ciphertext, err := base64.RawURLEncoding.DecodeString(parts[2])
+	ciphertext, err := decodeBase64URL(parts[2])
 	if err != nil {
 		return Meta{}, ErrInvalidEnvelope
 	}
@@ -219,8 +220,33 @@ func (k *KeySet) DecryptMeta(envelope string) (Meta, error) {
 	if err != nil {
 		return Meta{}, ErrDecrypt
 	}
+	return parseMeta(plaintext)
+}
+
+// parseMeta reads the envelope's JSON as FORMAT.md section 4 says: UTF-8,
+// an object with a type of "text" or "bundle" and a boolean
+// password_protected, other fields ignored. Keys match exactly, as in
+// JavaScript; encoding/json alone would match them in any case, take null
+// for an empty object and let invalid UTF-8 through.
+func parseMeta(plaintext []byte) (Meta, error) {
+	if !utf8.Valid(plaintext) {
+		return Meta{}, ErrInvalidEnvelope
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(plaintext, &fields); err != nil || fields == nil {
+		return Meta{}, ErrInvalidEnvelope
+	}
 	var meta Meta
-	if err := json.Unmarshal(plaintext, &meta); err != nil {
+	typ := fields["type"]
+	if len(typ) == 0 || typ[0] != '"' || json.Unmarshal(typ, &meta.Type) != nil ||
+		(meta.Type != "text" && meta.Type != "bundle") {
+		return Meta{}, ErrInvalidEnvelope
+	}
+	switch string(fields["password_protected"]) {
+	case "true":
+		meta.PasswordProtected = true
+	case "false":
+	default:
 		return Meta{}, ErrInvalidEnvelope
 	}
 	return meta, nil
@@ -373,9 +399,22 @@ func encode(b []byte) string {
 }
 
 func decodeExact(s string, length int) ([]byte, error) {
-	b, err := base64.RawURLEncoding.DecodeString(s)
+	b, err := decodeBase64URL(s)
 	if err != nil || len(b) != length {
 		return nil, errors.New("wrong length")
 	}
 	return b, nil
+}
+
+// decodeBase64URL accepts only canonical unpadded base64url (FORMAT.md
+// section 1). encoding/base64 skips line breaks even in strict mode, so the
+// alphabet is checked first; Strict refuses bits set past the last byte.
+func decodeBase64URL(s string) ([]byte, error) {
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if (c < 'A' || c > 'Z') && (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '-' && c != '_' {
+			return nil, errors.New("not base64url")
+		}
+	}
+	return base64.RawURLEncoding.Strict().DecodeString(s)
 }

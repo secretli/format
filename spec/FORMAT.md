@@ -6,7 +6,7 @@ Two independent implementations exist on purpose. They are checked against each 
 
 ## 1. Encodings and primitives
 
-- **Bytes as text** are unpadded base64url (RFC 4648 §5, no `=`) everywhere: links, tokens, the metadata envelope.
+- **Bytes as text** are unpadded base64url (RFC 4648 §5, no `=`) everywhere: links, tokens, the metadata envelope. Readers accept only this canonical form: the 64 characters `A`–`Z`, `a`–`z`, `0`–`9`, `-` and `_`, no padding, no white space, and no bits set past the last byte.
 - **Hashing**: SHA-256, lower-case hex, for upload parts; SHA-512 inside HKDF.
 - **Key derivation**: HKDF-SHA512 (RFC 5869) with no salt, which the RFC defines as a salt of 64 zero bytes, and an info string.
 - **Password derivation**: scrypt with N = 2^14, r = 8, p = 1, 32 bytes out.
@@ -42,7 +42,21 @@ https://<host>/s#<share secret>                      the link to hand out
 https://<host>/s#<share secret>!<deletion token>      the owner link
 ```
 
-Both parts are exactly 43 base64url characters. The fragment never reaches the server. Implementations refuse anything else: another path, another length, other characters.
+Both parts are exactly 43 base64url characters. The fragment never reaches the server.
+
+A reader drops spaces, tabs and line breaks around a link and accepts only text that matches this pattern as a whole:
+
+```
+^(https?)://([A-Za-z0-9.-]+|\[[0-9A-Fa-f:]+\])(?::([0-9]{1,5}))?/s#([A-Za-z0-9_-]{43})(?:!([A-Za-z0-9_-]{43}))?$
+```
+
+It refuses everything else: another scheme, or one in capitals, user info, percent-encoding, dot segments, another path, a query, another length, other characters. Beyond the pattern:
+
+- A host in brackets must be an IPv6 address, and not an IPv4-mapped one (`::ffff:…`). A port is at most 65535.
+- `http` is accepted only for a loopback host, for development: `localhost`, an address in 127.0.0.0/8 written as four decimal numbers without leading zeros, or the IPv6 loopback in any spelling. Anything else must be `https`.
+- The link's **origin**, the server it belongs to, is the scheme, `://`, the host in lower case (an IPv6 address in its canonical form, RFC 5952) and `:` with the port as a number, left out when it is the scheme's default (443 for `https`, 80 for `http`).
+
+`spec/vectors/links.json` lists links with what a reader must make of them (section 10).
 
 ## 4. The metadata envelope
 
@@ -62,7 +76,7 @@ sealed with `meta_key`, a random 24-byte nonce, and the AAD `public_id || "meta"
 
 **Padding.** Without it, the envelope's length would tell the server whether a secret is a note or files and whether it has a password. Writers pad the JSON with spaces (`0x20`) after its closing brace to `max(512, padme(n))` bytes, `n` being the JSON's length and `padme` the rounding of section 6, but to no more than 6,101 bytes, the most the server's limit of 8,192 characters for an envelope allows; JSON longer than that is not padded. So every envelope is 740 characters long, with room for fields to come. JSON allows white space after a value, so readers parse a padded envelope like any other and must not reject trailing white space.
 
-Readers accept only version `v2` and a 24-byte nonce.
+Readers accept only version `v2` and a 24-byte nonce. They refuse a plaintext that is not UTF-8, a byte order mark included, and JSON that is not an object with a `type` of `text` or `bundle` and a `password_protected` of `true` or `false`; other fields they ignore.
 
 ## 5. The bundle
 
@@ -142,6 +156,8 @@ The client derives everything and encrypts the metadata envelope. It plans the b
 
 The upload limit is 1 GiB of bundle. Planning needs no file contents, so clients check the planned size against it before anything is encrypted.
 
+Writers read each file while they encrypt it and fail if it turns out shorter or longer than planned, so a file that changes during an upload never ships cut short.
+
 ## 10. Interop vectors
 
 `spec/vectors/ts-vectors.json` is written by the TypeScript implementation and read by the Go tests; `go-vectors.json` is written by Go and read by the TypeScript tests. Both hold a list of cases:
@@ -197,6 +213,8 @@ A reader parses the code as typed, runs both sides with the given scalars, expec
 `password` is empty for a secret without one, and `password_blob_token` then equals `blob_token`. `generated` content comes from xorshift32: with a 32-bit state `x` starting at `seed`, each byte is the low byte of `x` after `x ^= x << 13; x ^= x >> 17; x ^= x << 5` (unsigned 32-bit arithmetic). It lets the vectors cover multi-chunk files without storing megabytes of plaintext.
 
 A reader opens the other side's bundle with the case's keys and expects the case's files. It then writes the files itself with the case's `prefix` and expects exactly the same bytes: with the prefix given and zeros as padding, nothing in a version 3 bundle is random, so both writers must produce it byte for byte. It also opens `encrypted_meta`, expects `meta`, and expects the plaintext to be the JSON followed by spaces up to the padded length (section 4).
+
+`spec/vectors/links.json` holds links and what a reader must make of each: its origin, share secret and deletion token, or a refusal. Both implementations' tests read it, so the two link readers accept and refuse exactly the same text (section 3).
 
 The committed files hold small cases. CI generates fresh vectors on both sides at every run, including files of 0, 1, 65,535, 65,536, 65,537 and 4 MiB + 3 bytes, a file list long enough to span two chunks, and a note, and checks that each side reads and reproduces the other's.
 

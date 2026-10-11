@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/secretli/format/go/internal/fixedprefix"
 	"github.com/secretli/format/go/keys"
 )
 
@@ -42,14 +43,20 @@ func NewEncrypter(plan *StreamPlan, sources []Source, ks *keys.KeySet) (*Encrypt
 	if _, err := rand.Read(prefix); err != nil {
 		return nil, fmt.Errorf("draw bundle prefix: %w", err)
 	}
-	return NewEncrypterWithPrefix(plan, sources, ks, prefix)
+	return newEncrypterWithPrefix(plan, sources, ks, prefix)
 }
 
-// NewEncrypterWithPrefix is NewEncrypter with the prefix given instead of
+// The vectors tests reach newEncrypterWithPrefix through package
+// fixedprefix; nothing else may fix a bundle's prefix.
+func init() {
+	fixedprefix.NewEncrypter = newEncrypterWithPrefix
+}
+
+// newEncrypterWithPrefix is NewEncrypter with the prefix given instead of
 // drawn. With the prefix fixed nothing in a bundle is random, which the
 // vectors need (FORMAT.md section 10). Anything else uses NewEncrypter: the
 // same prefix for two bundles under the same keys breaks the encryption.
-func NewEncrypterWithPrefix(plan *StreamPlan, sources []Source, ks *keys.KeySet, prefix []byte) (*Encrypter, error) {
+func newEncrypterWithPrefix(plan *StreamPlan, sources []Source, ks *keys.KeySet, prefix []byte) (*Encrypter, error) {
 	if len(prefix) != PrefixLength {
 		return nil, errors.New("bundle prefix must be 16 bytes")
 	}

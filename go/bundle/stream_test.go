@@ -29,7 +29,7 @@ func streamBundle(t *testing.T, ks *keys.KeySet, sources []Source) (*StreamPlan,
 	if err != nil {
 		t.Fatal(err)
 	}
-	enc, err := NewEncrypterWithPrefix(plan, sources, ks, fixedPrefix())
+	enc, err := newEncrypterWithPrefix(plan, sources, ks, fixedPrefix())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -288,7 +288,7 @@ func TestEncrypterIsDeterministicGivenThePrefix(t *testing.T) {
 	}
 
 	// Read in odd sizes, the bundle is the same.
-	enc, err := NewEncrypterWithPrefix(plan, sources, ks, fixedPrefix())
+	enc, err := newEncrypterWithPrefix(plan, sources, ks, fixedPrefix())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -352,7 +352,7 @@ func TestEncrypterNoticesFilesThatChanged(t *testing.T) {
 	if _, err := NewEncrypter(plan, []Source{memSource("f", "", []byte("four"))}, ks); !errors.Is(err, ErrInvalidSource) {
 		t.Errorf("another size: err = %v, want ErrInvalidSource", err)
 	}
-	if _, err := NewEncrypterWithPrefix(plan, []Source{memSource("f", "", []byte("abc"))}, ks, make([]byte, 15)); err == nil {
+	if _, err := newEncrypterWithPrefix(plan, []Source{memSource("f", "", []byte("abc"))}, ks, make([]byte, 15)); err == nil {
 		t.Error("a short prefix must be refused")
 	}
 }

@@ -1,10 +1,17 @@
 package link
 
-import "testing"
+import (
+	"regexp"
+	"testing"
+)
+
+// secretAndToken is what an accepted link's secret and token must look like.
+var secretAndToken = regexp.MustCompile(`^[A-Za-z0-9_-]{43}(?:![A-Za-z0-9_-]{43})?$`)
 
 // FuzzParse throws arbitrary text at the link parser. It must never panic,
 // and whatever it accepts must have an origin and a secret, and an optional
 // deletion token, in the strict 43-character alphabet (FORMAT.md section 3).
+// The origin is canonical: the link written again from it reads the same.
 func FuzzParse(f *testing.F) {
 	seeds := []string{
 		"https://secretli.app/s#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
@@ -36,11 +43,15 @@ func FuzzParse(f *testing.F) {
 		if l.Secret == "" {
 			t.Fatalf("accepted empty secret: %q", raw)
 		}
-		if got := fragment.FindStringSubmatch(l.Secret + optionalToken(l.DeletionToken)); got == nil {
+		if !secretAndToken.MatchString(l.Secret + optionalToken(l.DeletionToken)) {
 			t.Fatalf("accepted secret/token outside the alphabet: %q -> %q %q", raw, l.Secret, l.DeletionToken)
 		}
 		if l.Origin == "" {
 			t.Fatalf("accepted empty origin: %q", raw)
+		}
+		again, err := Parse(l.Origin + "/s#" + l.Secret + optionalToken(l.DeletionToken))
+		if err != nil || again != l {
+			t.Fatalf("%q read as %+v, written again as %+v, %v", raw, l, again, err)
 		}
 	})
 }

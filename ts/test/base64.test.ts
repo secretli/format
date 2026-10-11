@@ -35,3 +35,23 @@ describe("base64Url", () => {
     expect(new TextDecoder().decode(decoded)).toBe("Hello");
   });
 });
+
+describe("base64UrlDecode", () => {
+  it.each([
+    ["padding", "SGVsbG8="],
+    ["white space", "SGVs bG8"],
+    ["a line break", "SGVs\nbG8"],
+    ["standard base64's +", "a+bc"],
+    ["standard base64's /", "a/bc"],
+    ["a length that is no number of bytes", "AAAAA"],
+    ["bits set past the last byte", "SGVsbG9"],
+    ["bits set past the last byte of 32", `${"A".repeat(42)}B`],
+    ["a character outside ASCII", "SGVsbG\u00e9"],
+  ])("refuses %s", (_, text) => {
+    expect(() => base64UrlDecode(text)).toThrow("invalid base64url");
+  });
+
+  it("accepts the canonical form of 32 bytes", () => {
+    expect(base64UrlDecode(`${"A".repeat(42)}E`)).toHaveLength(32);
+  });
+});

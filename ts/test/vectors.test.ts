@@ -16,7 +16,7 @@ import {
 import { KeySet, type SecretMeta } from "../src/encryption";
 import { openBundle } from "../src/openBundle";
 import { padme } from "../src/padme";
-import { BUNDLE_PIECE_SIZE, encryptStream, planStream } from "../src/stream";
+import { BUNDLE_PIECE_SIZE, encryptStreamWithPrefix, planStream } from "../src/stream";
 import {
   channelIdentifier,
   confirmationTag,
@@ -191,7 +191,7 @@ async function writeBundle(
   );
   const parts: Uint8Array[] = [];
   const blobs = contents.map((c) => new Blob([toArrayBuffer(c)]));
-  for await (const part of encryptStream(plan, blobs, keySet, { prefix })) {
+  for await (const part of encryptStreamWithPrefix(plan, blobs, keySet, prefix)) {
     parts.push(part);
   }
   const out = new Uint8Array(plan.totalSize);
