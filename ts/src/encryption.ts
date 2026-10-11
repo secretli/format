@@ -92,8 +92,8 @@ export class KeySet {
   }
 
   static async fromShareSecret(encoded: string, password?: string): Promise<KeySet> {
-    const shareSecretBytes = base64UrlDecode(encoded);
-    if (shareSecretBytes.length !== SHARE_SECRET_LENGTH) {
+    const shareSecretBytes = decodeOrUndefined(encoded);
+    if (shareSecretBytes?.length !== SHARE_SECRET_LENGTH) {
       throw new Error("invalid share secret");
     }
     const baseKeys = deriveBaseKeys(shareSecretBytes);
@@ -143,10 +143,10 @@ export class KeySet {
     }
 
     const version = parts[0];
-    const nonce = base64UrlDecode(parts[1]);
-    const ciphertext = base64UrlDecode(parts[2]);
+    const nonce = decodeOrUndefined(parts[1]);
+    const ciphertext = decodeOrUndefined(parts[2]);
 
-    if (version !== ENVELOPE_VERSION || nonce.length !== NONCE_LENGTH) {
+    if (version !== ENVELOPE_VERSION || nonce?.length !== NONCE_LENGTH || !ciphertext) {
       throw new Error("invalid metadata envelope format");
     }
 
@@ -154,7 +154,7 @@ export class KeySet {
     const cipher = xchacha20poly1305(this.metaKey, nonce, aad);
     const plaintext = cipher.decrypt(ciphertext);
 
-    return JSON.parse(new TextDecoder().decode(plaintext));
+    return parseMeta(plaintext);
   }
 
   /**
@@ -284,4 +284,40 @@ function passwordSalt(shareSecret: Uint8Array): Uint8Array {
 
 function label(name: string): Uint8Array {
   return encoder.encode(`${DERIVATION_PREFIX}:${name}`);
+}
+
+/** The bytes of canonical base64url, or undefined for anything else. */
+function decodeOrUndefined(encoded: string): Uint8Array | undefined {
+  try {
+    return base64UrlDecode(encoded);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Reads the envelope's JSON as FORMAT.md section 4 says: UTF-8 without a byte order mark,
+ * an object with a type of "text" or "bundle" and a boolean password_protected, other
+ * fields ignored. A plain TextDecoder would replace invalid UTF-8 and drop a BOM.
+ */
+function parseMeta(plaintext: Uint8Array): SecretMeta {
+  let fields: unknown;
+  try {
+    fields = JSON.parse(
+      new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(plaintext),
+    );
+  } catch {
+    throw new Error("invalid metadata envelope");
+  }
+  if (typeof fields !== "object" || fields === null || Array.isArray(fields)) {
+    throw new Error("invalid metadata envelope");
+  }
+  const own = (key: string) =>
+    Object.hasOwn(fields, key) ? (fields as Record<string, unknown>)[key] : undefined;
+  const type = own("type");
+  const passwordProtected = own("password_protected");
+  if ((type !== "text" && type !== "bundle") || typeof passwordProtected !== "boolean") {
+    throw new Error("invalid metadata envelope");
+  }
+  return { type, password_protected: passwordProtected };
 }

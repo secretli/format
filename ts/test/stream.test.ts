@@ -3,8 +3,9 @@ import { openBundle } from "../src/openBundle";
 import {
   BUNDLE_PIECE_SIZE,
   createStreamBundle,
+  createStreamBundleWithPrefix,
   cutIntoParts,
-  encryptStream,
+  encryptStreamWithPrefix,
   MAX_BUNDLE_LIST_BYTES,
   plannedBundleSize,
   planStream,
@@ -22,8 +23,7 @@ function sizeFilling(content: number): number {
 }
 
 async function bundleBytes(files: File[], keySet: KeySet, readBytes?: number) {
-  const { blob, plan } = await createStreamBundle(files, keySet, {
-    prefix: fixedPrefix(),
+  const { blob, plan } = await createStreamBundleWithPrefix(files, keySet, fixedPrefix(), {
     readBytes,
   });
   return { bytes: await blobBytes(blob), plan };
@@ -160,8 +160,8 @@ describe("writing a bundle", () => {
   it("refuses files that do not match the plan or changed", async () => {
     const keySet = await KeySet.generateRandom();
     const plan = planStream([{ name: "f", size: 100 }]);
-    const drain = async (files: Blob[], prefix?: Uint8Array) => {
-      for await (const _ of encryptStream(plan, files, keySet, { prefix })) {
+    const drain = async (files: Blob[], prefix = fixedPrefix()) => {
+      for await (const _ of encryptStreamWithPrefix(plan, files, keySet, prefix)) {
         // nothing
       }
     };
@@ -176,6 +176,19 @@ describe("writing a bundle", () => {
       slice: () => new Blob([new Uint8Array(90)]),
     } as unknown as Blob;
     await expect(drain([changed])).rejects.toThrow("bundle file changed during encryption");
+    // One that grew reads in full up to the planned size, and on past it.
+    const content = xorshift32(5, 110);
+    const grown = {
+      size: 100,
+      slice: (start: number, end: number) => new Blob([content.slice(start, end)]),
+    } as unknown as Blob;
+    await expect(drain([grown])).rejects.toThrow("bundle file changed during encryption");
+    // The same reads, with nothing past the end, make a bundle.
+    const same = {
+      size: 100,
+      slice: (start: number, end: number) => new Blob([content.slice(0, 100).slice(start, end)]),
+    } as unknown as Blob;
+    await expect(drain([same])).resolves.toBeUndefined();
   });
 
   it("cuts parts of exactly the part size, the last one shorter", async () => {
@@ -210,7 +223,7 @@ describe("writing a bundle", () => {
     const cut: number[] = [];
     let at = 0;
     for await (const part of cutIntoParts(
-      encryptStream(plan, files, keySet, { prefix: fixedPrefix() }),
+      encryptStreamWithPrefix(plan, files, keySet, fixedPrefix()),
       65536,
     )) {
       cut.push(part.length);

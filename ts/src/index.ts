@@ -15,6 +15,21 @@ export * from "./cpace.js";
 export * from "./encryption.js";
 export * from "./openBundle.js";
 export * from "./shareLink.js";
-export * from "./stream.js";
+// Not export *: the WithPrefix variants are for the vectors only (FORMAT.md section 10).
+export {
+  BUNDLE_PIECE_SIZE,
+  BUNDLE_READ_BYTES,
+  type BundleEntry,
+  type BundleFileInput,
+  createStreamBundle,
+  cutIntoParts,
+  type EncryptStreamOptions,
+  encryptStream,
+  MAX_BUNDLE_LIST_BYTES,
+  plannedBundleSize,
+  planStream,
+  SEALED_BUNDLE_CHUNK_SIZE,
+  type StreamPlan,
+} from "./stream.js";
 export * from "./transfer.js";
 export * from "./transferWords.js";

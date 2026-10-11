@@ -2,7 +2,7 @@ import { KeySet } from "../src/encryption";
 import { openBundle } from "../src/openBundle";
 import {
   BUNDLE_PIECE_SIZE,
-  createStreamBundle,
+  createStreamBundleWithPrefix,
   SEALED_BUNDLE_CHUNK_SIZE,
   type StreamPlan,
 } from "../src/stream";
@@ -24,7 +24,7 @@ async function bundleOf(
   files: File[],
   keySet: KeySet,
 ): Promise<{ bytes: Uint8Array; plan: StreamPlan }> {
-  const { blob, plan } = await createStreamBundle(files, keySet, { prefix: fixedPrefix() });
+  const { blob, plan } = await createStreamBundleWithPrefix(files, keySet, fixedPrefix());
   return { bytes: await blobBytes(blob), plan };
 }
 

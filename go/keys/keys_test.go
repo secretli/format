@@ -120,7 +120,8 @@ func TestRejectsMaterialOfTheWrongLength(t *testing.T) {
 	if _, err := ks.WithDeletionToken("short"); !errors.Is(err, ErrInvalidToken) {
 		t.Errorf("short deletion token: err = %v, want ErrInvalidToken", err)
 	}
-	owner, err := ks.WithDeletionToken(strings.Repeat("D", 43))
+	// A canonical token: the last character sets no bits past the 32nd byte.
+	owner, err := ks.WithDeletionToken(strings.Repeat("D", 42) + "A")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -265,8 +266,9 @@ func TestMetaPaddingIsBounded(t *testing.T) {
 		if got := len(openMeta(t, ks, envelope)); got != c.plaintext {
 			t.Errorf("type of %d: plaintext %d bytes, want %d", c.typeLength, got, c.plaintext)
 		}
-		if got, err := ks.DecryptMeta(envelope); err != nil || got != meta {
-			t.Errorf("type of %d: %v", c.typeLength, err)
+		// Only text and bundle are types a reader accepts (FORMAT.md section 4).
+		if _, err := ks.DecryptMeta(envelope); !errors.Is(err, ErrInvalidEnvelope) {
+			t.Errorf("type of %d: err = %v, want ErrInvalidEnvelope", c.typeLength, err)
 		}
 	}
 	envelope, err := ks.EncryptMeta(Meta{Type: strings.Repeat("x", 6000-around)})
@@ -395,5 +397,67 @@ func TestChunksAreBoundToTheirPlace(t *testing.T) {
 	}
 	if _, err := other.DecryptChunk(prefix, 3, false, chunk); !errors.Is(err, ErrDecrypt) {
 		t.Errorf("other keys: err = %v, want ErrDecrypt", err)
+	}
+}
+
+func TestDecryptMetaAcceptsOnlyTheEnvelopesShape(t *testing.T) {
+	ks, err := FromShareSecret(fixedSecret(t), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		plaintext string
+		want      *Meta
+	}{
+		{`{"type":"text","password_protected":false}`, &Meta{Type: "text"}},
+		{`{"type":"bundle","password_protected":true}   `, &Meta{Type: "bundle", PasswordProtected: true}},
+		{`{"password_protected":false,"type":"text","bundle_name":"x","new":[1]}`, &Meta{Type: "text"}},
+		{`{"type":"text","type":"bundle","password_protected":false}`, &Meta{Type: "bundle"}},
+		{`null`, nil},
+		{`[]`, nil},
+		{`"text"`, nil},
+		{`{}`, nil},
+		{`{"type":"text"}`, nil},
+		{`{"password_protected":false}`, nil},
+		{`{"type":"note","password_protected":false}`, nil},
+		{`{"type":null,"password_protected":false}`, nil},
+		{`{"type":1,"password_protected":false}`, nil},
+		{`{"TYPE":"text","password_protected":false}`, nil},
+		{`{"type":"text","Password_Protected":false}`, nil},
+		{`{"type":"text","password_protected":"no"}`, nil},
+		{`{"type":"text","password_protected":0}`, nil},
+		{`{"type":"text","password_protected":null}`, nil},
+		{"\ufeff{\"type\":\"text\",\"password_protected\":false}", nil},
+		{"{\"type\":\"text\",\"password_protected\":false,\"x\":\"\xff\"}", nil},
+	} {
+		got, err := ks.DecryptMeta(sealMeta(t, ks, c.plaintext))
+		if c.want == nil {
+			if !errors.Is(err, ErrInvalidEnvelope) {
+				t.Errorf("%q: got %+v, %v; want ErrInvalidEnvelope", c.plaintext, got, err)
+			}
+			continue
+		}
+		if err != nil || got != *c.want {
+			t.Errorf("%q: got %+v, %v; want %+v", c.plaintext, got, err, *c.want)
+		}
+	}
+}
+
+func TestBase64URLMustBeCanonical(t *testing.T) {
+	good := base64.RawURLEncoding.EncodeToString(make([]byte, 32))
+	if _, err := FromShareSecret(good, ""); err != nil {
+		t.Fatalf("canonical secret: %v", err)
+	}
+	for name, encoded := range map[string]string{
+		"padded":                 base64.URLEncoding.EncodeToString(make([]byte, 32)),
+		"standard alphabet":      strings.Repeat("+", 42) + "A",
+		"line break inside":      good[:20] + "\n" + good[20:],
+		"carriage return at end": good + "\r",
+		"space inside":           good[:20] + " " + good[21:],
+		"bits past the end":      good[:42] + "B",
+	} {
+		if _, err := FromShareSecret(encoded, ""); !errors.Is(err, ErrInvalidShareSecret) {
+			t.Errorf("%s: err = %v, want ErrInvalidShareSecret", name, err)
+		}
 	}
 }
