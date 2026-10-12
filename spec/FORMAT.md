@@ -21,7 +21,7 @@ A secret begins with 32 random bytes, the **share secret**. It is all a recipien
 | name | bytes | purpose |
 |---|---|---|
 | `public_id` | 16 | the id the server files the secret under (22 characters encoded) |
-| `metadata_token` | 32 | the right to read the metadata envelope and to ask what became of a gone secret (43 characters) |
+| `metadata_token` | 32 | the right to read the metadata envelope, which comes with whether a recipient has opened a reusable secret (43 characters) |
 | `meta_key` | 32 | encrypts the metadata envelope |
 | `blob_key` | 32 | encrypts the bundle |
 | `blob_token` | 32 | the right to open a retrieval session, which reads the bundle (43 characters) |
@@ -29,7 +29,7 @@ A secret begins with 32 random bytes, the **share secret**. It is all a recipien
 
 `public_id`, `metadata_token`, `meta_key` and `password_salt` are always derived from the share secret itself. `blob_key` and `blob_token` are derived from the **blob material**: the share secret when the secret has no password, otherwise `scrypt(password as UTF-8, password_salt, N = 2^14, r = 8, p = 1, 32 bytes)`.
 
-So anyone with the link can read the metadata and learn that there is a password, but only the password holder can derive the token the server demands for the content, and the server cannot tell a wrong password from a wrong link.
+So anyone with the link can read the metadata and learn that there is a password, but only the password holder can derive the token the server demands for the content, and the server cannot tell a wrong password from a wrong link. The server counts wrong blob tokens per secret and deletes the secret at the tenth; each refusal (403) says in `details.attempts_left` how many more it takes. That limits guessing through the server. Whoever has both the link and the server's hash of the blob token can test passwords without it, at the cost of one scrypt each, so a password protects only as well as it is strong.
 
 The **deletion token** is 32 random bytes and is not derived from anything. It is the one thing the owner has and recipients do not.
 
@@ -148,7 +148,7 @@ The server serves the bundle by byte range (`GET /api/v1/secrets/{public_id}/blo
 - **The list.** A bundle of at most 1 MiB is fetched whole in one request. Of a larger one, the reader fetches the first 1 MiB, which holds the list unless it is very long; if the list length says the list goes on, the reader fetches the chunks that hold the rest. Starting with a fixed amount keeps the server from learning the list's length, and with it roughly the number of files.
 - **A file.** Its bytes lie in chunks `⌊start / 65,536⌋` to `⌊(start + size − 1) / 65,536⌋` (section 6). Readers fetch neighbouring chunks in one request, up to 16 MiB of plaintext, and when several files are wanted they fetch across gaps of less than 1 MiB rather than make another request. A reader may fetch only the files it is asked for; the others need not be read at all.
 
-The server sees which chunks are read, but not where one file ends and the next begins.
+The server sees which chunks are read. Reading the whole bundle tells it nothing about the files. Reading only some of them tells it roughly where those lie and how big they are, to within the 64 KiB of a chunk, and less exactly when neighbouring files are fetched together across a gap.
 
 ## 9. Making a secret
 
