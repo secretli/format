@@ -112,7 +112,7 @@ The snippets leave out error handling. The upload protocol (sessions, parts), th
 
 Every change is one of three kinds, and the kind decides the release:
 
-- **The format** (`spec/`): rare and deliberate. One pull request changes the specification, both implementations and both committed vector files; CI's interop job fails otherwise. A committed vector that changes without the specification means an implementation's output changed, which is a break. Readers keep accepting the previous form for as long as old secrets can exist, and the clients ship the reader before anything writes the new form. Released as a minor version while below 1.0, as a major one from then on.
+- **The format** (`spec/`): rare and deliberate. One pull request changes the specification, both implementations and both committed vector files; CI's interop job fails otherwise. A committed vector that changes without the specification means an implementation's output changed, which is a break. Readers keep accepting the previous form for as long as old secrets can exist, and the clients ship the reader before anything writes the new form. Released as a minor version while below 1.0, as a major one from then on. A change to `FORMAT.md` alone that changes no byte and no rule, such as a clearer sentence or a corrected statement about what the server learns, is editorial: no release.
 - **The libraries** (the code in `go/` and `ts/src/`, and the runtime dependencies: the `require` lines in `go.mod`, `dependencies` in `ts/package.json`):
   - a fix in our own code is released right away, as a patch version;
   - new or changed API is released as a minor version;
