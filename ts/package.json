@@ -11,7 +11,7 @@
   },
   "homepage": "https://github.com/secretli/format#readme",
   "type": "module",
-  "packageManager": "pnpm@12.11.2",
+  "packageManager": "pnpm@12.16.1",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
@@ -43,7 +43,7 @@
     "@noble/hashes": "^2.0.0"
   },
   "devDependencies": {
-    "@biomejs/biome": "2.5.15",
+    "@biomejs/biome": "2.6.4",
     "@types/node": "^24.0.0",
     "typescript": "^7.0.0",
     "vitest": "^5.0.0"
