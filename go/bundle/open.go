@@ -3,13 +3,13 @@ package bundle
 import (
 	"context"
 	"encoding/binary"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
 	"math"
 	"slices"
-	"strconv"
 
 	"github.com/secretli/format/go/keys"
 )
@@ -137,74 +137,61 @@ func (b *Bundle) headChunk(index int64) ([]byte, error) {
 	return b.ks.DecryptChunk(b.prefix, index, index == b.chunks-1, b.head[chunkStart(index):chunkEnd(index, b.size)])
 }
 
-// listFile is one file of the list as it was written; fields are decoded one
-// by one, so that their types and exact names are checked as JavaScript
-// readers see them.
-type listFile map[string]json.RawMessage
+// readList is the file list as a JavaScript reader sees it: names matched
+// exactly, unknown fields ignored, a repeated name taking its last value,
+// bytes that are not UTF-8 replaced with U+FFFD. A field that is missing or
+// null stays nil, so that only a value of the right type passes.
+type readList struct {
+	Files []struct {
+		Name *string `json:"name"`
+		Type *string `json:"type"`
+		// Size is read as a double, as JSON.parse reads it: 1.0 and 1e3
+		// are integers, a string is not a number.
+		Size *float64 `json:"size"`
+	} `json:"files"`
+}
+
+// jsonParse are the options that make encoding/json/v2 read JSON as
+// JSON.parse after a non-fatal TextDecoder does.
+var jsonParse = json.JoinOptions(
+	jsontext.AllowDuplicateNames(true),
+	jsontext.AllowInvalidUTF8(true),
+)
 
 // parseList checks the file list (FORMAT.md section 6) and works out where
 // each file starts.
 func parseList(raw []byte, stream int64) ([]Entry, []int64, error) {
-	var list map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &list); err != nil {
+	var list readList
+	if err := json.Unmarshal(raw, &list, jsonParse); err != nil {
 		return nil, nil, fmt.Errorf("%w: %w", ErrInvalidList, err)
 	}
-	var files []listFile
-	if err := json.Unmarshal(list["files"], &files); err != nil || len(files) == 0 {
+	if len(list.Files) == 0 {
 		return nil, nil, fmt.Errorf("%w: no files", ErrInvalidList)
 	}
 	position := int64(listLengthSize + len(raw))
 	remaining := stream - position
-	entries := make([]Entry, len(files))
-	starts := make([]int64, len(files))
-	for i, f := range files {
-		name, ok := jsonString(f["name"])
-		if !ok || name == "" {
+	entries := make([]Entry, len(list.Files))
+	starts := make([]int64, len(list.Files))
+	for i, f := range list.Files {
+		if f.Name == nil || *f.Name == "" {
 			return nil, nil, fmt.Errorf("%w: file %d has no name", ErrInvalidList, i)
 		}
-		typ, ok := jsonString(f["type"])
-		if !ok {
+		if f.Type == nil {
 			return nil, nil, fmt.Errorf("%w: file %d has no type", ErrInvalidList, i)
 		}
-		size, ok := jsonSize(f["size"])
-		if !ok {
+		if f.Size == nil || *f.Size != math.Trunc(*f.Size) || *f.Size < 0 || *f.Size > MaxFileSize {
 			return nil, nil, fmt.Errorf("%w: file %d has an invalid size", ErrInvalidList, i)
 		}
+		size := int64(*f.Size)
 		if size > remaining {
 			return nil, nil, fmt.Errorf("%w: the files are larger than the stream", ErrInvalidList)
 		}
-		entries[i] = Entry{Index: i, Name: name, Type: typ, Size: size}
+		entries[i] = Entry{Index: i, Name: *f.Name, Type: *f.Type, Size: size}
 		starts[i] = position
 		position += size
 		remaining -= size
 	}
 	return entries, starts, nil
-}
-
-// jsonString decodes a JSON string, and nothing else.
-func jsonString(raw json.RawMessage) (string, bool) {
-	if len(raw) == 0 || raw[0] != '"' {
-		return "", false
-	}
-	var s string
-	if err := json.Unmarshal(raw, &s); err != nil {
-		return "", false
-	}
-	return s, true
-}
-
-// jsonSize decodes a size as a JavaScript reader does, as a double, and
-// accepts it if that is an integer from 0 to 2^53 − 1: 1.0 and 1e3 are, 1.5
-// and 2^53 are not, nor is a string.
-func jsonSize(raw json.RawMessage) (int64, bool) {
-	if len(raw) == 0 || (raw[0] != '-' && (raw[0] < '0' || raw[0] > '9')) {
-		return 0, false
-	}
-	f, err := strconv.ParseFloat(string(raw), 64)
-	if err != nil || f != math.Trunc(f) || f < 0 || f > MaxFileSize {
-		return 0, false
-	}
-	return int64(f), true
 }
 
 // Decrypt decrypts the files at these indices, nil meaning every file, in

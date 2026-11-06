@@ -364,6 +364,16 @@ func TestListValidation(t *testing.T) {
 			file(`{"name":"\u00e9\ud83d\udcc4\/","type":"t","size":0}`),
 			[]Entry{{0, "é📄/", "t", 0}},
 		},
+		// JSON.parse keeps the last of a repeated name.
+		"repeated names": {
+			`{"files":[],"files":[{"name":"a","name":"b","type":"t","size":1,"size":2}]}`,
+			[]Entry{{0, "b", "t", 2}},
+		},
+		// A lone surrogate is not Unicode text; it reads as U+FFFD.
+		"a lone surrogate": {
+			file(`{"name":"a\ud800","type":"t","size":0}`),
+			[]Entry{{0, "a�", "t", 0}},
+		},
 	} {
 		b, err := open(streamOf(c.list, bytes.Repeat([]byte("z"), 13), 4096))
 		if err != nil {

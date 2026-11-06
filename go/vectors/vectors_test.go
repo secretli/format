@@ -8,7 +8,8 @@ import (
 	"crypto/sha512"
 	"encoding/base64"
 	"encoding/hex"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"flag"
 	"fmt"
 	"io"
@@ -59,8 +60,8 @@ type generated struct {
 type vectorFile struct {
 	Name          string     `json:"name"`
 	Type          string     `json:"type"`
-	ContentBase64 *string    `json:"content_base64,omitempty"`
-	Generated     *generated `json:"generated,omitempty"`
+	ContentBase64 *string    `json:"content_base64,omitzero"`
+	Generated     *generated `json:"generated,omitzero"`
 }
 
 type vectorCase struct {
@@ -159,7 +160,9 @@ func TestReadsVectors(t *testing.T) {
 				t.Fatalf("missing vectors (see the comment at the top of this file): %v", err)
 			}
 			var v vectors
-			if err := json.Unmarshal(raw, &v); err != nil {
+			// The TypeScript vectors hold names with lone surrogates, which
+			// JSON.parse reads and v2 refuses unless told otherwise.
+			if err := json.Unmarshal(raw, &v, jsontext.AllowInvalidUTF8(true)); err != nil {
 				t.Fatal(err)
 			}
 			if len(v.Cases) == 0 || len(v.Transfer) == 0 {
@@ -393,7 +396,7 @@ func TestWritesGoVectors(t *testing.T) {
 		v.Cases = append(v.Cases, c)
 	}
 
-	out, err := json.MarshalIndent(v, "", "  ")
+	out, err := json.Marshal(v, jsontext.WithIndent("  "), jsontext.AllowInvalidUTF8(true))
 	if err != nil {
 		t.Fatal(err)
 	}
