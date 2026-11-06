@@ -10,7 +10,8 @@ import (
 	"crypto/sha512"
 	"encoding/base64"
 	"encoding/binary"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"strings"
@@ -223,33 +224,32 @@ func (k *KeySet) DecryptMeta(envelope string) (Meta, error) {
 	return parseMeta(plaintext)
 }
 
+// readMeta is the envelope as a JavaScript reader sees it: names matched
+// exactly, unknown fields ignored, a repeated name taking its last value. A
+// field that is missing or null stays nil, so that only a value of the right
+// type passes.
+type readMeta struct {
+	Type              *string `json:"type"`
+	PasswordProtected *bool   `json:"password_protected"`
+}
+
 // parseMeta reads the envelope's JSON as FORMAT.md section 4 says: UTF-8,
 // an object with a type of "text" or "bundle" and a boolean
-// password_protected, other fields ignored. Keys match exactly, as in
-// JavaScript; encoding/json alone would match them in any case, take null
-// for an empty object and let invalid UTF-8 through.
+// password_protected, other fields ignored. The UTF-8 check comes first, as
+// in a fatal TextDecoder; JSON.parse then takes escaped lone surrogates,
+// hence AllowInvalidUTF8.
 func parseMeta(plaintext []byte) (Meta, error) {
 	if !utf8.Valid(plaintext) {
 		return Meta{}, ErrInvalidEnvelope
 	}
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(plaintext, &fields); err != nil || fields == nil {
+	var fields readMeta
+	err := json.Unmarshal(plaintext, &fields,
+		jsontext.AllowDuplicateNames(true), jsontext.AllowInvalidUTF8(true))
+	if err != nil || fields.Type == nil || fields.PasswordProtected == nil ||
+		(*fields.Type != "text" && *fields.Type != "bundle") {
 		return Meta{}, ErrInvalidEnvelope
 	}
-	var meta Meta
-	typ := fields["type"]
-	if len(typ) == 0 || typ[0] != '"' || json.Unmarshal(typ, &meta.Type) != nil ||
-		(meta.Type != "text" && meta.Type != "bundle") {
-		return Meta{}, ErrInvalidEnvelope
-	}
-	switch string(fields["password_protected"]) {
-	case "true":
-		meta.PasswordProtected = true
-	case "false":
-	default:
-		return Meta{}, ErrInvalidEnvelope
-	}
-	return meta, nil
+	return Meta{Type: *fields.Type, PasswordProtected: *fields.PasswordProtected}, nil
 }
 
 // metaPaddedLength is how long the envelope's plaintext is for JSON of n

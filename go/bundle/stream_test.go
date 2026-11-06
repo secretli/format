@@ -5,7 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/hex"
-	"encoding/json"
+	"encoding/json/v2"
 	"errors"
 	"io"
 	"strings"
@@ -243,7 +243,10 @@ func TestListIsEncodedAsJSONStringify(t *testing.T) {
 		t.Errorf("list =\n%s\nwant\n%s", got, wantBytes)
 	}
 	var decoded struct {
-		Files []struct{ Name, Type string }
+		Files []struct {
+			Name string `json:"name"`
+			Type string `json:"type"`
+		} `json:"files"`
 	}
 	if err := json.Unmarshal(plan.ListJSON, &decoded); err != nil || decoded.Files[3].Name != "tab\there\b\f\n\r\x07\x1f\x7f.txt" {
 		t.Errorf("the list does not decode to the names: %v", err)

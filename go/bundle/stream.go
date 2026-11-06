@@ -1,9 +1,9 @@
 package bundle
 
 import (
+	"encoding/json/v2"
 	"errors"
 	"fmt"
-	"strconv"
 	"unicode/utf8"
 
 	"github.com/secretli/format/go/keys"
@@ -107,7 +107,10 @@ func NewStreamPlan(sources []Source) (*StreamPlan, error) {
 		plan.Files[i] = Entry{Index: i, Name: validUTF8(src.Name), Type: validUTF8(typ), Size: src.Size}
 		content += src.Size
 	}
-	plan.ListJSON = appendList(nil, plan.Files)
+	var err error
+	if plan.ListJSON, err = marshalList(plan.Files); err != nil {
+		return nil, fmt.Errorf("encode the file list: %w", err)
+	}
 	if len(plan.ListJSON) > MaxListBytes {
 		return nil, ErrListTooLarge
 	}
@@ -139,58 +142,26 @@ func validUTF8(s string) string {
 	return string(out)
 }
 
-// appendList encodes the file list as both writers must, so that their
+// listJSON is the file list as both writers must encode it, so that their
 // bundles are identical: compact, keys in this order, strings escaped as
-// JSON.stringify escapes them (FORMAT.md section 6). encoding/json would
-// escape <, >, &, U+2028 and U+2029, which JSON.stringify writes as they
-// are.
-func appendList(dst []byte, files []Entry) []byte {
-	dst = append(dst, `{"files":[`...)
-	for i, f := range files {
-		if i > 0 {
-			dst = append(dst, ',')
-		}
-		dst = append(dst, `{"name":`...)
-		dst = appendString(dst, f.Name)
-		dst = append(dst, `,"type":`...)
-		dst = appendString(dst, f.Type)
-		dst = append(dst, `,"size":`...)
-		dst = strconv.AppendInt(dst, f.Size, 10)
-		dst = append(dst, '}')
-	}
-	return append(dst, "]}"...)
+// JSON.stringify escapes them (FORMAT.md section 6). encoding/json/v2 does
+// exactly that; it leaves <, >, &, U+2028 and U+2029 as they are.
+type listJSON struct {
+	Files []listJSONFile `json:"files"`
 }
 
-// appendString writes s as a JSON string the way ECMAScript's JSON.stringify
-// does: the quote and the backslash escaped, \b \f \n \r \t, any other
-// control character as \u00xx in lower case, and everything else as UTF-8.
-// Bytes that are not UTF-8 become U+FFFD.
-func appendString(dst []byte, s string) []byte {
-	const hex = "0123456789abcdef"
-	dst = append(dst, '"')
-	for _, r := range s {
-		switch r {
-		case '"':
-			dst = append(dst, '\\', '"')
-		case '\\':
-			dst = append(dst, '\\', '\\')
-		case '\b':
-			dst = append(dst, '\\', 'b')
-		case '\f':
-			dst = append(dst, '\\', 'f')
-		case '\n':
-			dst = append(dst, '\\', 'n')
-		case '\r':
-			dst = append(dst, '\\', 'r')
-		case '\t':
-			dst = append(dst, '\\', 't')
-		default:
-			if r < 0x20 {
-				dst = append(dst, '\\', 'u', '0', '0', hex[r>>4], hex[r&0xf])
-			} else {
-				dst = utf8.AppendRune(dst, r)
-			}
-		}
+type listJSONFile struct {
+	Name string `json:"name"`
+	Type string `json:"type"`
+	Size int64  `json:"size"`
+}
+
+// marshalList encodes the file list. The names and types are valid UTF-8
+// already (validUTF8), so encoding cannot fail on them.
+func marshalList(files []Entry) ([]byte, error) {
+	list := listJSON{Files: make([]listJSONFile, len(files))}
+	for i, f := range files {
+		list.Files[i] = listJSONFile{Name: f.Name, Type: f.Type, Size: f.Size}
 	}
-	return append(dst, '"')
+	return json.Marshal(list)
 }
